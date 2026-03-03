@@ -1,5 +1,6 @@
 #include "UpperCommTask.h"
 #include "CanCommTask.h"
+#include "TaskSharedData.h"
 extern volatile uint8_t g_calibrationUIStatus;
 
 // --- 协议定义 ---
@@ -7,11 +8,12 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PROTOCOL_TAIL 0xFF
 #define PACKET_TYPE_SENSOR 0x01
 #define PACKET_TYPE_CALIB_ACK 0x02
+#define PACKET_TYPE_SERVO_ANGLE 0x03
 
 // 内部辅助：发送数据包
-void sendDataPacket(ServoStatus_t *pServo, RemoteSensorData_t *pSensor)
+void sendDataPacket(ServoStatus_t *pServo, RemoteSensorData_t *pSensor, ServoAngleData_t *pServoAngle)
 {
-    uint8_t buffer[64];
+    uint8_t buffer[128]; // 增大缓冲区以容纳舵机角度数据
     size_t idx = 0;
 
     // 1. 帧头
@@ -35,6 +37,24 @@ void sendDataPacket(ServoStatus_t *pServo, RemoteSensorData_t *pSensor)
             uint16_t val = pSensor->encoderValues[i];
             buffer[idx++] = (val >> 8) & 0xFF;
             buffer[idx++] = val & 0xFF;
+        }
+    }
+    else if (pServoAngle)
+    {
+        // [新增] 舵机角度数据
+        buffer[idx++] = PACKET_TYPE_SERVO_ANGLE;
+        for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
+        {
+            int32_t angle = pServoAngle->servoAngles[i];
+            buffer[idx++] = (angle >> 24) & 0xFF;
+            buffer[idx++] = (angle >> 16) & 0xFF;
+            buffer[idx++] = (angle >> 8) & 0xFF;
+            buffer[idx++] = angle & 0xFF;
+        }
+        // 发送在线状态
+        for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
+        {
+            buffer[idx++] = pServoAngle->onlineStatus[i];
         }
     }
     else
@@ -128,12 +148,20 @@ void taskUpperComm(void *parameter)
         // 使用 Receive 移除队列中旧数据，保证实时性
         if (xQueueReceive(sharedData->canRxQueue, &sensorData, 0) == pdTRUE)
         {
-            sendDataPacket(NULL, &sensorData);
+            sendDataPacket(NULL, &sensorData, NULL);
         }
-        // 如果没有传感器数据，但有校准状态变化 (Success/Fail)，也需要立即发送
-        else if (g_calibrationUIStatus != 0)
-        {
-            sendDataPacket(NULL, NULL);
+        // 尝试从队列获取最新的舵机角度数据
+        else {
+            ServoAngleData_t servoAngleData;
+            if (xQueueReceive(sharedData->servoAngleQueue, &servoAngleData, 0) == pdTRUE)
+            {
+                sendDataPacket(NULL, NULL, &servoAngleData);
+            }
+            // 如果没有传感器数据，但有校准状态变化 (Success/Fail)，也需要立即发送
+            else if (g_calibrationUIStatus != 0)
+            {
+                sendDataPacket(NULL, NULL, NULL);
+            }
         }
 
         // 任务调度延时

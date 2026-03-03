@@ -71,6 +71,13 @@ typedef struct {
     uint8_t temperature;
 } ServoStatus_t;
 
+// 舵机角度数据结构体
+typedef struct {
+    int32_t servoAngles[ENCODER_TOTAL_NUM]; // 舵机绝对角度值
+    uint8_t onlineStatus[ENCODER_TOTAL_NUM]; // 舵机在线状态
+    uint32_t timestamp; // 数据时间戳
+} ServoAngleData_t;
+
 // 任务间共享的数据结构
 typedef struct {
     QueueHandle_t cmdQueue;
@@ -79,6 +86,9 @@ typedef struct {
         // 【新增】CAN 通信队列
     QueueHandle_t canTxQueue;    // 存放要发给 S3 的指令
     QueueHandle_t canRxQueue;    // 存放从 S3 收到的解包数据
+    
+    // 【新增】舵机角度数据队列
+    QueueHandle_t servoAngleQueue; // 存放舵机角度数据
     
      // 【新增】目标角度数组 + 互斥锁
     // 由 UpperCommTask 写入，由 taskSolver 读取

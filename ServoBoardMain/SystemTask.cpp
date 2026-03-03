@@ -68,10 +68,12 @@ void System_Init() {
     sharedData.statusQueue = xQueueCreate(3, sizeof(ServoStatus_t));
     sharedData.canRxQueue  = xQueueCreate(1, sizeof(RemoteSensorData_t));
     sharedData.canTxQueue  = xQueueCreate(5, sizeof(RemoteCommand_t));
+    sharedData.servoAngleQueue = xQueueCreate(1, sizeof(ServoAngleData_t));
 
     
     if (!sharedData.cmdQueue || !sharedData.statusQueue ||
-        !sharedData.canRxQueue || !sharedData.canTxQueue) {
+        !sharedData.canRxQueue || !sharedData.canTxQueue ||
+        !sharedData.servoAngleQueue) {
         while (1);
     }
 
@@ -85,10 +87,10 @@ void System_Init() {
     memset(sharedData.targetAngles, 0, sizeof(sharedData.targetAngles));
 
 
-servoBus0.begin(0, 16, 17, 1000000);  // 总线0: RX=16, TX=17, 波特率1Mbps
-servoBus1.begin(1, 18, 19, 1000000);  // 总线1: RX=18, TX=19
-servoBus2.begin(2, 20, 21, 1000000);  // 总线2: RX=20, TX=21（根据实际修改）
-servoBus3.begin(3, 22, 23, 1000000);  // 总线3: RX=22, TX=23（根据实际修改）
+servoBus0.begin(0, 21, 20, 1000000);  // 总线0: RX=16, TX=17, 波特率1Mbps
+servoBus1.begin(1, 23, 22, 1000000);  // 总线1: RX=18, TX=19
+servoBus2.begin(2, 27, 26, 1000000);  // 总线2: RX=20, TX=21（根据实际修改）
+servoBus3.begin(3, 33, 32, 1000000);  // 总线3: RX=22, TX=23（根据实际修改）
 
     // 【新增】初始化 AngleSolver
     int16_t zeros[ENCODER_TOTAL_NUM];
@@ -131,7 +133,8 @@ servoBus3.begin(3, 22, 23, 1000000);  // 总线3: RX=22, TX=23（根据实际修
     );
 
     // 【新增】创建解算任务
-    xTaskCreate(taskSolver, 
+    xTaskCreate(
+        taskSolver, 
         "Solver",
          SOLVER_TASK_STACK_SIZE, 
          &sharedData,

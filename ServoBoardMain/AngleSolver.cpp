@@ -1,6 +1,7 @@
 #include "AngleSolver.h"
 #include <string.h> // for memset if needed
 #include "pid.h"
+#include "TaskSharedData.h"
 // ============================================================
 // 【新增】外部引用（定义在 SystemTask.cpp 中）
 // ============================================================
@@ -137,6 +138,9 @@ void taskSolver(void *parameter)
         // ========================================
         // 步骤 2: 获取多圈绝对位置并转换为角度
         // ========================================
+        ServoAngleData_t servoData;
+        servoData.timestamp = millis();
+        
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
             uint8_t bus = jointMap[i].busIndex;
@@ -149,12 +153,21 @@ void taskSolver(void *parameter)
                 int32_t absPos = pBus->getAbsolutePosition(id);
                 // 转换为角度（每圈 4096 步 = 360°）
                 servoAngles[i] = (float)absPos * 360.0f / 4096.0f;
+                
+                // 存储舵机角度数据和在线状态
+                servoData.servoAngles[i] = absPos;
+                servoData.onlineStatus[i] = 1;
             }
             else
             {
                 servoAngles[i] = 0.0f;
+                servoData.servoAngles[i] = 0;
+                servoData.onlineStatus[i] = 0;
             }
         }
+        
+        // 发送舵机角度数据到队列
+        xQueueOverwrite(sharedData->servoAngleQueue, &servoData);
 
         // ========================================
         // 步骤 3: 读取 CAN 磁编角度

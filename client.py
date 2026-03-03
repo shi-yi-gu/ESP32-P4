@@ -36,6 +36,10 @@ class MachineState:
     def __init__(self):
         self.angles = [0] * ENCODER_COUNT
         self.errors = [False] * ENCODER_COUNT
+        
+        # 舵机角度数据
+        self.servo_angles = [0] * ENCODER_COUNT
+        self.servo_online = [False] * ENCODER_COUNT
 
         # 状态: IDLE, PENDING, SUCCESS, FAILED
         self.calib_status = "IDLE"
@@ -84,6 +88,25 @@ def process_ack_packet(payload):
         state.calib_status = "FAILED"
         state.calib_timestamp = time.time()
 
+def process_servo_angle_packet(payload):
+    """ 解析舵机角度数据包 (Type 0x03) """
+    expected_len = ENCODER_COUNT * 4 + ENCODER_COUNT  # 每个角度4字节，每个在线状态1字节
+    if len(payload) != expected_len:
+        return
+
+    # 解析角度数据
+    for i in range(ENCODER_COUNT):
+        # 大端序解析4字节
+        val = (payload[i * 4] << 24) | (payload[i * 4 + 1] << 16) | (payload[i * 4 + 2] << 8) | payload[i * 4 + 3]
+        state.servo_angles[i] = val
+    
+    # 解析在线状态
+    offset = ENCODER_COUNT * 4
+    for i in range(ENCODER_COUNT):
+        state.servo_online[i] = payload[offset + i] == 1
+
+    state.last_update = time.time()
+
 
 def parse_stream(buffer):
     """ 从字节流中提取完整数据帧 """
@@ -120,6 +143,8 @@ def parse_stream(buffer):
                     process_data_packet(payload)
                 elif pkt_type == 0x02:
                     process_ack_packet(payload)
+                elif pkt_type == 0x03:
+                    process_servo_angle_packet(payload)
 
             # 移除已处理帧
             buffer = buffer[frame_len:]
@@ -196,6 +221,31 @@ def print_ui():
                     # 正常数据，根据角度区分颜色方便观察变化
                     color = Fore.CYAN if idx % 2 == 0 else Fore.WHITE
                     val_str = f"{color}{raw:05d} ({deg:6.2f}°){Style.RESET_ALL}"
+
+                line_str += f"{id_str} {val_str}   "
+        print(line_str)
+
+    print("-" * 65)
+
+    # --- 舵机角度数据 ---
+    print(f"{Style.BRIGHT}舵机角度数据 (绝对位置):{Style.RESET_ALL}")
+
+    for r in range(rows):
+        line_str = ""
+        for c in range(3):
+            idx = r + c * rows
+            if idx < ENCODER_COUNT:
+                angle = state.servo_angles[idx]
+                is_online = state.servo_online[idx]
+
+                # 格式化单个单元格
+                id_str = f"[{idx:02d}]"
+                if not is_online:
+                    val_str = f"{Back.RED}{Fore.WHITE} OFFLINE {Style.RESET_ALL}"
+                else:
+                    # 正常数据，根据角度区分颜色方便观察变化
+                    color = Fore.GREEN if idx % 2 == 0 else Fore.YELLOW
+                    val_str = f"{color}{angle:06d}{Style.RESET_ALL}"
 
                 line_str += f"{id_str} {val_str}   "
         print(line_str)
