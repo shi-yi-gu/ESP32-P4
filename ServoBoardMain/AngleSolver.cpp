@@ -3,7 +3,7 @@
 #include "pid.h"
 #include "TaskSharedData.h"
 #ifndef SOLVER_DIAG_LOG_ENABLE
-#define SOLVER_DIAG_LOG_ENABLE
+#define SOLVER_DIAG_LOG_ENABLE 0
 #endif
 // ============================================================
 // 【新增】外部引用（定义在 SystemTask.cpp 中）
@@ -67,7 +67,7 @@ bool AngleSolver::compute(float *targetDegs, float *magActualDegs,
         f_PID_Calculate(&_pids[i][1], loop2_Target, loop2_Actual);
 
         // 输出脉冲
-        outServoPulses[i] = (int16_t)_pids[i][1]. ;
+        outServoPulses[i] = (int16_t)_pids[i][1].Output;
     }
     return true;
 }
