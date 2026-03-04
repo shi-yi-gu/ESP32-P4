@@ -2,6 +2,9 @@
 #include <string.h> // for memset if needed
 #include "pid.h"
 #include "TaskSharedData.h"
+#ifndef SOLVER_DIAG_LOG_ENABLE
+#define SOLVER_DIAG_LOG_ENABLE
+#endif
 // ============================================================
 // 【新增】外部引用（定义在 SystemTask.cpp 中）
 // ============================================================
@@ -64,7 +67,7 @@ bool AngleSolver::compute(float *targetDegs, float *magActualDegs,
         f_PID_Calculate(&_pids[i][1], loop2_Target, loop2_Actual);
 
         // 输出脉冲
-        outServoPulses[i] = (int16_t)_pids[i][1].Output;
+        outServoPulses[i] = (int16_t)_pids[i][1]. ;
     }
     return true;
 }
@@ -114,10 +117,8 @@ void taskSolver(void *parameter)
       TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;
 
     // 定义每条总线的舵机 ID 列表（根据你的配置：4+4+4+5）
-    const uint8_t bus0_ids[] = {1, 2, 3, 4};    // 总线0: 4个舵机
-    const uint8_t bus1_ids[] = {1, 2, 3, 4};    // 总线1: 4个舵机
-    const uint8_t bus2_ids[] = {1, 2, 3, 4};    // 总线2: 4个舵机
-    const uint8_t bus3_ids[] = {1, 2, 3, 4, 5}; // 总线3: 5个舵机
+    const uint8_t bus0_ids[] = {1};
+    const uint8_t bus0_count = (uint8_t)(sizeof(bus0_ids) / sizeof(bus0_ids[0]));
 
     // 本地数据缓冲区
     float localTargets[ENCODER_TOTAL_NUM];
@@ -125,15 +126,26 @@ void taskSolver(void *parameter)
     float servoAngles[ENCODER_TOTAL_NUM];
     int16_t outPulses[ENCODER_TOTAL_NUM];
     RemoteSensorData_t sensorData;
+#if SOLVER_DIAG_LOG_ENABLE
+    uint32_t lastDiagLogMs = 0;
+#endif
     while (1)
     {
         // ========================================
         // 步骤 1: 同步读取所有舵机位置（自动跨圈检测）
         // ========================================
-        servoBus0.syncReadPositions(bus0_ids, 4);
-        servoBus1.syncReadPositions(bus1_ids, 4);
-        servoBus2.syncReadPositions(bus2_ids, 4);
-        servoBus3.syncReadPositions(bus3_ids, 5);
+        int bus0SuccessCount = servoBus0.syncReadPositions(bus0_ids, bus0_count);
+
+#if SOLVER_DIAG_LOG_ENABLE
+        uint32_t nowMs = millis();
+        if (nowMs - lastDiagLogMs >= 500) {
+            lastDiagLogMs = nowMs;
+            Serial.printf("[Solver] bus0 read=%d online=%d abs=%ld\r\n",
+                          bus0SuccessCount,
+                          servoBus0.isOnline(1) ? 1 : 0,
+                          (long)servoBus0.getAbsolutePosition(1));
+        }
+#endif
 
         // ========================================
         // 步骤 2: 获取多圈绝对位置并转换为角度

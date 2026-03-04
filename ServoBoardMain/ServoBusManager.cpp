@@ -81,7 +81,13 @@ int ServoBusManager::syncReadPositions(const uint8_t* ids, uint8_t count) {
 
     // 2. 发送同步读请求
     int ret = _sms.syncReadPacketTx((uint8_t*)ids, count, ADDR_PRESENT_POSITION, LEN_POSITION);
-    if (ret != count) {
+    if (ret <= 0) {
+        for (uint8_t i = 0; i < count; i++) {
+            uint8_t id = ids[i];
+            if (id <= MAX_SERVO_ID) {
+                _feedback[id].online = false;
+            }
+        }
         _sms.syncReadEnd();
         return 0;
     }
@@ -95,7 +101,10 @@ int ServoBusManager::syncReadPositions(const uint8_t* ids, uint8_t count) {
         
         if (rxLen == LEN_POSITION) {
             // 解析位置数据（小端序）
-            int16_t rawPos = (rxBuf[1] << 8) | rxBuf[0];
+            uint16_t rawWord = ((uint16_t)rxBuf[1] << 8) | rxBuf[0];
+            int16_t rawPos = (rawWord & (1 << 15))
+                                 ? -(int16_t)(rawWord & ~(1 << 15))
+                                 : (int16_t)rawWord;
             
             // 更新多圈位置（自动跨圈检测）
             _updateMultiTurnPosition(id, rawPos);
