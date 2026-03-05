@@ -6,9 +6,8 @@
 #ifndef SOLVER_DIAG_LOG_ENABLE
 #define SOLVER_DIAG_LOG_ENABLE 0
 #endif
-// ============================================================
-// 【新增】外部引用（定义在 SystemTask.cpp 中）
-// ============================================================
+
+// 外部实例（定义于 SystemTask.cpp）。
 extern ServoBusManager servoBus0;
 extern ServoBusManager servoBus1;
 extern ServoBusManager servoBus2;
@@ -16,10 +15,7 @@ extern ServoBusManager servoBus3;
 extern AngleSolver angleSolver;
 extern JointMapItem jointMap[ENCODER_TOTAL_NUM];
 
-// ============================================================
-// 原有 AngleSolver 类实现（保持不变）
-// ============================================================
-
+// AngleSolver 类核心实现（保持行为不变）。
 AngleSolver::AngleSolver() : _initialized(false)
 {
     memset(_zeroOffsets, 0, sizeof(_zeroOffsets));
@@ -40,8 +36,6 @@ void AngleSolver::init(int16_t *zeroOffsets, float *gearRatios, int8_t *directio
     _initialized = true;
 }
 
-
-
 void AngleSolver::setPIDParams(float pidParams[][PID_PARAMETER_NUM])
 {
     for (int i = 0; i < JOINT_COUNT; i++)
@@ -51,23 +45,23 @@ void AngleSolver::setPIDParams(float pidParams[][PID_PARAMETER_NUM])
     }
 }
 
-// 核心批量解算逻辑（保持不变）
+// 核心批量解算逻辑（双环 PID）。
 bool AngleSolver::compute(float *targetDegs, float *magActualDegs,
                           float *servoActualDegs, int16_t *outServoPulses)
 {
     for (int i = 0; i < JOINT_COUNT; i++)
     {
-        // --- 第一环 (外环: 位置环) ---
-        // 目标: 上位机规划角度
-        // 实际: 磁编角度
+        // 第一环（外环：位置环）
+        // 目标：来自上位机规划角度
+        // 实际：磁编反馈角度
         f_PID_Calculate(&_pids[i][0], targetDegs[i], magActualDegs[i]);
 
-        // --- 第二环 (内环: 舵机环) ---
+        // 第二环（内环：舵机环）
         float loop2_Target = _pids[i][0].Output + servoActualDegs[i];
         float loop2_Actual = servoActualDegs[i];
         f_PID_Calculate(&_pids[i][1], loop2_Target, loop2_Actual);
 
-        // 输出脉冲
+        // 输出舵机脉冲。
         outServoPulses[i] = (int16_t)_pids[i][1].Output;
     }
     return true;
@@ -76,6 +70,7 @@ bool AngleSolver::compute(float *targetDegs, float *magActualDegs,
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
 
+// 映射计数发送前做 int16 饱和裁剪。
 static int16_t clampToInt16(int32_t value)
 {
     if (value > 32767) return 32767;
@@ -83,6 +78,7 @@ static int16_t clampToInt16(int32_t value)
     return (int16_t)value;
 }
 
+// 按安装方向统一磁编读数方向。
 static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction)
 {
     int32_t oriented = (int32_t)rawValue & (kEncoderModulo - 1);
@@ -92,6 +88,7 @@ static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction)
     return oriented;
 }
 
+// 原始磁编值跨圈连续化，避免 0/16384 边界跳变导致角度突变。
 static int32_t unwrapEncoderToContinuous(uint8_t jointIndex,
                                          int32_t orientedRaw,
                                          int32_t* prevOrientedRaw,
@@ -114,6 +111,7 @@ static int32_t unwrapEncoderToContinuous(uint8_t jointIndex,
     return continuousRaw[jointIndex];
 }
 
+// 读取每个关节校准 offset；校准失败时回退到手动 offset。
 static int32_t getEncoderOffset(uint8_t jointIndex)
 {
     if (jointIndex >= ENCODER_TOTAL_NUM) return 0;
@@ -123,14 +121,13 @@ static int32_t getEncoderOffset(uint8_t jointIndex)
     return g_encoderOffsetManual[jointIndex];
 }
 
+// 编码器计数转角度（deg）。
 static float convertEncoderCountToDeg(int32_t encoderCount)
 {
     return (float)encoderCount * 360.0f / (float)kEncoderModulo;
 }
 
-// ============================================================
-// 【新增】辅助函数：根据总线编号获取 ServoBusManager 指针
-// ============================================================
+// 根据总线号获取对应 ServoBusManager 实例。
 static ServoBusManager *getBusByIndex(uint8_t busIndex)
 {
     switch (busIndex)
@@ -148,16 +145,12 @@ static ServoBusManager *getBusByIndex(uint8_t busIndex)
     }
 }
 
-// ============================================================
-// 【新增】taskSolver — 角度解算 + 电机控制任务
-// ============================================================
-// 数据流:
-//   目标角度 ← sharedData.targetAngles[] (由 UpperCommTask 写入)
-//   磁编角度 ← sharedData.canRxQueue     (由 CanCommTask 写入)
-//   舵机反馈 ← ServoBusManager.readPosition()
-//   输出脉冲 → ServoBusManager.writePosition()
-// ============================================================
-
+// Solver 任务：执行传感数据映射 + 双环解算 + 舵机下发。
+// 数据流：
+//   目标角度 -> sharedData.targetAngles[]（UpperCommTask 写入）
+//   磁编角度 -> sharedData.canRxQueue（CanCommTask 写入）
+//   舵机反馈 -> ServoBusManager.readPosition()
+//   控制输出 -> ServoBusManager.writePosition()
 void taskSolver(void *parameter)
 {
     TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;
@@ -186,6 +179,7 @@ void taskSolver(void *parameter)
 
     while (1)
     {
+        // 1) 读取舵机反馈（用于内环）。
         int bus0SuccessCount = servoBus0.syncReadPositions(bus0_ids, bus0_count);
         (void)bus0SuccessCount;
 
