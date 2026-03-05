@@ -1,4 +1,4 @@
-﻿#include "JointCalibrationProfile.h"
+#include "JointCalibrationProfile.h"
 
 // 默认校准参数
 // 如某关节未单独调参 可先使用该默认值

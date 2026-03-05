@@ -1,11 +1,10 @@
-﻿#ifndef TASK_SHARED_DATA_H
+#ifndef TASK_SHARED_DATA_H
 #define TASK_SHARED_DATA_H
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
-#include "ServoManager.h"
 
 // ============ 常量定义 ============
 #define ENCODER_TOTAL_NUM 21
@@ -81,11 +80,11 @@ typedef struct {
     QueueHandle_t statusQueue;
 
     // CAN 通信队列
-    QueueHandle_t canTxQueue;      // 存放要发给 S3 的指令
-    QueueHandle_t canRxQueue;      // 存放从 S3 收到的解包数据
+    QueueHandle_t canTxQueue;       // 存放要发给 S3 的指令
+    QueueHandle_t canRxQueue;       // 存放从 S3 收到的解包数据
 
     // 舵机与磁编角度队列
-    QueueHandle_t servoAngleQueue; // 存放舵机角度数据
+    QueueHandle_t servoAngleQueue;  // 存放舵机角度数据
     QueueHandle_t mappedAngleQueue; // 存放映射后的磁编角度；供上位机显示与 PID 同源使用
 
     // 目标角度数组 + 互斥锁（UpperCommTask 写入，taskSolver 读取）
@@ -93,4 +92,4 @@ typedef struct {
     SemaphoreHandle_t targetAnglesMutex;
 } TaskSharedData_t;
 
-#endif
+#endif // TASK_SHARED_DATA_H

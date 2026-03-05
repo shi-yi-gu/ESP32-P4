@@ -1,4 +1,4 @@
-﻿#include "UpperCommTask.h"
+#include "UpperCommTask.h"
 #include "CanCommTask.h"
 #include "TaskSharedData.h"
 
