@@ -14,8 +14,7 @@ static const JointCalibrationConfig kDefaultJointCalib = {
     5000   // maxSearchMs
 };
 
-// Joint 0~3: dedicated entries for real hardware tuning.
-// You can manually update these four blocks with measured values.
+// Joints 0~3: dedicated entries for manual tuning.
 static const JointCalibrationConfig kJoint0Calib = {
     4000, 120, 120, 240, 180, 10, 150, 10, 20, 5000
 };
@@ -33,32 +32,32 @@ static const JointCalibrationConfig kJoint3Calib = {
 };
 
 const JointCalibrationConfig kJointCalibrationProfile[ENCODER_TOTAL_NUM] = {
-    // joint 0 ~ joint 6
-    kJoint0Calib,       // 0
-    kJoint1Calib,       // 1
-    kJoint2Calib,       // 2
-    kJoint3Calib,       // 3
-    kDefaultJointCalib, // 4
-    kDefaultJointCalib, // 5
-    kDefaultJointCalib, // 6
+    // joint 0 ~ 6
+    kJoint0Calib,
+    kJoint1Calib,
+    kJoint2Calib,
+    kJoint3Calib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
 
-    // joint 7 ~ joint 13
-    kDefaultJointCalib, // 7
-    kDefaultJointCalib, // 8
-    kDefaultJointCalib, // 9
-    kDefaultJointCalib, // 10
-    kDefaultJointCalib, // 11
-    kDefaultJointCalib, // 12
-    kDefaultJointCalib, // 13
+    // joint 7 ~ 13
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
 
-    // joint 14 ~ joint 20
-    kDefaultJointCalib, // 14
-    kDefaultJointCalib, // 15
-    kDefaultJointCalib, // 16
-    kDefaultJointCalib, // 17
-    kDefaultJointCalib, // 18
-    kDefaultJointCalib, // 19
-    kDefaultJointCalib  // 20
+    // joint 14 ~ 20
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib,
+    kDefaultJointCalib
 };
 
 void loadJointCalibrationProfile(JointCalibrationConfig* dst, uint8_t count)
