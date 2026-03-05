@@ -97,6 +97,13 @@ public:
      */
     bool isOnline(uint8_t id) const;
 
+    /**
+     * @brief 直接读取舵机负载(用于校准流程中的阈值判断)
+     * @param id 舵机 ID
+     * @return 负载值, 读取失败返回 0
+     */
+    int16_t readLoad(uint8_t id);
+
 private:
     SMS_STS _sms;                    // 飞特舵机协议对象
     HardwareSerial* _serial;         // 串口指针

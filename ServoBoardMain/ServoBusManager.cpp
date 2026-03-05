@@ -200,3 +200,18 @@ bool ServoBusManager::isOnline(uint8_t id) const {
     if (id > MAX_SERVO_ID) return false;
     return _feedback[id].online;
 }
+
+int16_t ServoBusManager::readLoad(uint8_t id) {
+    if (!_serial || id > MAX_SERVO_ID) return 0;
+
+    int load = _sms.ReadLoad(id);
+    if (load == -1) {
+        _feedback[id].online = false;
+        return 0;
+    }
+
+    _feedback[id].load = (int16_t)load;
+    _feedback[id].online = true;
+    _feedback[id].lastUpdate = millis();
+    return (int16_t)load;
+}
