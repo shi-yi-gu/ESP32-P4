@@ -52,6 +52,14 @@ typedef struct {
     bool     isValid;
 } RemoteSensorData_t;
 
+// Mapped magnetic encoder angle (after direction/unwarp/offset).
+typedef struct {
+    int16_t angleValues[ENCODER_TOTAL_NUM];
+    uint8_t validFlags[ENCODER_TOTAL_NUM];
+    uint32_t timestamp;
+    bool isValid;
+} MappedAngleData_t;
+
 // 舵机指令
 typedef struct {
     uint8_t cmdType;
@@ -89,6 +97,7 @@ typedef struct {
     
     // 【新增】舵机角度数据队列
     QueueHandle_t servoAngleQueue; // 存放舵机角度数据
+    QueueHandle_t mappedAngleQueue; // 存放映射后的磁编角度数据
     
      // 【新增】目标角度数组 + 互斥锁
     // 由 UpperCommTask 写入，由 taskSolver 读取

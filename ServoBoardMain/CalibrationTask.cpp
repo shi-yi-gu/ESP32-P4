@@ -14,9 +14,25 @@ extern volatile uint8_t g_calibrationUIStatus;
 
 JointCalibrationConfig g_jointCalibConfig[ENCODER_TOTAL_NUM];
 JointCalibrationResult g_jointCalibResult[ENCODER_TOTAL_NUM];
+int8_t g_encoderDirection[ENCODER_TOTAL_NUM] = {
+    1,-1,-1, 1, 
+    1,-1,-1, 1, 
+    1,-1,-1, 1, 
+    1,-1,-1, 1, 
+    1, 1,-1,-1, 1
+};
+int32_t g_encoderOffsetManual[ENCODER_TOTAL_NUM] = {0};
 
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
+
+static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction) {
+    int32_t oriented = (int32_t)rawValue & (kEncoderModulo - 1);
+    if (direction < 0) {
+        oriented = (kEncoderModulo - oriented) & (kEncoderModulo - 1);
+    }
+    return oriented;
+}
 
 static ServoBusManager* getBusByIndex(uint8_t busIndex) {
     switch (busIndex) {
@@ -47,8 +63,9 @@ static bool readLatestEncoderRaw(TaskSharedData_t* sharedData, uint8_t jointInde
     RemoteSensorData_t sensorData;
     if (xQueuePeek(sharedData->canRxQueue, &sensorData, 0) != pdTRUE) return false;
     if (!sensorData.isValid) return false;
+    if (sensorData.errorFlags[jointIndex]) return false;
 
-    *outEncoder = (int32_t)sensorData.encoderValues[jointIndex];
+    *outEncoder = orientEncoderRaw(sensorData.encoderValues[jointIndex], g_encoderDirection[jointIndex]);
     return true;
 }
 

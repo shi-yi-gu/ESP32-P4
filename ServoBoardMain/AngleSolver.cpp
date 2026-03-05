@@ -2,6 +2,7 @@
 #include <string.h> // for memset if needed
 #include "pid.h"
 #include "TaskSharedData.h"
+#include "CalibrationTask.h"
 #ifndef SOLVER_DIAG_LOG_ENABLE
 #define SOLVER_DIAG_LOG_ENABLE 0
 #endif
@@ -72,12 +73,59 @@ bool AngleSolver::compute(float *targetDegs, float *magActualDegs,
     return true;
 }
 
-// ============================================================
-// 【新增】辅助函数：CAN 原始值转角度 (0-16383 -> 0-360°)
-// ============================================================
-static float convertCanToDeg(uint16_t rawValue)
+static const int32_t kEncoderModulo = 16384;
+static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
+
+static int16_t clampToInt16(int32_t value)
 {
-    return (float)rawValue * 360.0f / 16384.0f;
+    if (value > 32767) return 32767;
+    if (value < -32768) return -32768;
+    return (int16_t)value;
+}
+
+static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction)
+{
+    int32_t oriented = (int32_t)rawValue & (kEncoderModulo - 1);
+    if (direction < 0) {
+        oriented = (kEncoderModulo - oriented) & (kEncoderModulo - 1);
+    }
+    return oriented;
+}
+
+static int32_t unwrapEncoderToContinuous(uint8_t jointIndex,
+                                         int32_t orientedRaw,
+                                         int32_t* prevOrientedRaw,
+                                         int32_t* continuousRaw,
+                                         bool* initialized)
+{
+    if (!initialized[jointIndex]) {
+        initialized[jointIndex] = true;
+        prevOrientedRaw[jointIndex] = orientedRaw;
+        continuousRaw[jointIndex] = orientedRaw;
+        return continuousRaw[jointIndex];
+    }
+
+    int32_t delta = orientedRaw - prevOrientedRaw[jointIndex];
+    if (delta > kEncoderHalfTurn) delta -= kEncoderModulo;
+    if (delta < -kEncoderHalfTurn) delta += kEncoderModulo;
+
+    prevOrientedRaw[jointIndex] = orientedRaw;
+    continuousRaw[jointIndex] += delta;
+    return continuousRaw[jointIndex];
+}
+
+static int32_t getEncoderOffset(uint8_t jointIndex)
+{
+    if (jointIndex >= ENCODER_TOTAL_NUM) return 0;
+    if (g_jointCalibResult[jointIndex].success) {
+        return g_jointCalibResult[jointIndex].offset;
+    }
+    return g_encoderOffsetManual[jointIndex];
+}
+
+static float convertEncoderCountToDeg(int32_t encoderCount)
+{
+    return (float)encoderCount * 360.0f / (float)kEncoderModulo;
 }
 
 // ============================================================
@@ -112,29 +160,34 @@ static ServoBusManager *getBusByIndex(uint8_t busIndex)
 
 void taskSolver(void *parameter)
 {
+    TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;
+    if (!sharedData) {
+        vTaskDelete(NULL);
+        return;
+    }
 
-    // TaskSharedData_t *sharedData = (TaskSharedData_t *)parameter;
-      TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;
-
-    // 定义每条总线的舵机 ID 列表（根据你的配置：4+4+4+5）
     const uint8_t bus0_ids[] = {1};
     const uint8_t bus0_count = (uint8_t)(sizeof(bus0_ids) / sizeof(bus0_ids[0]));
 
-    // 本地数据缓冲区
-    float localTargets[ENCODER_TOTAL_NUM];
-    float canAngles[ENCODER_TOTAL_NUM];
-    float servoAngles[ENCODER_TOTAL_NUM];
-    int16_t outPulses[ENCODER_TOTAL_NUM];
+    float localTargets[ENCODER_TOTAL_NUM] = {0.0f};
+    float magAngles[ENCODER_TOTAL_NUM] = {0.0f};
+    float servoAngles[ENCODER_TOTAL_NUM] = {0.0f};
+    int16_t outPulses[ENCODER_TOTAL_NUM] = {0};
+
     RemoteSensorData_t sensorData;
+    MappedAngleData_t mappedData;
+    int32_t prevOrientedRaw[ENCODER_TOTAL_NUM] = {0};
+    int32_t continuousRaw[ENCODER_TOTAL_NUM] = {0};
+    bool unwrapInitialized[ENCODER_TOTAL_NUM] = {false};
+
 #if SOLVER_DIAG_LOG_ENABLE
     uint32_t lastDiagLogMs = 0;
 #endif
+
     while (1)
     {
-        // ========================================
-        // 步骤 1: 同步读取所有舵机位置（自动跨圈检测）
-        // ========================================
         int bus0SuccessCount = servoBus0.syncReadPositions(bus0_ids, bus0_count);
+        (void)bus0SuccessCount;
 
 #if SOLVER_DIAG_LOG_ENABLE
         uint32_t nowMs = millis();
@@ -147,12 +200,10 @@ void taskSolver(void *parameter)
         }
 #endif
 
-        // ========================================
-        // 步骤 2: 获取多圈绝对位置并转换为角度
-        // ========================================
         ServoAngleData_t servoData;
+        memset(&servoData, 0, sizeof(servoData));
         servoData.timestamp = millis();
-        
+
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
             uint8_t bus = jointMap[i].busIndex;
@@ -161,12 +212,8 @@ void taskSolver(void *parameter)
 
             if (pBus && pBus->isOnline(id))
             {
-                // 使用多圈绝对位置（-30719 到 30719）
                 int32_t absPos = pBus->getAbsolutePosition(id);
-                // 转换为角度（每圈 4096 步 = 360°）
                 servoAngles[i] = (float)absPos * 360.0f / 4096.0f;
-                
-                // 存储舵机角度数据和在线状态
                 servoData.servoAngles[i] = absPos;
                 servoData.onlineStatus[i] = 1;
             }
@@ -177,38 +224,46 @@ void taskSolver(void *parameter)
                 servoData.onlineStatus[i] = 0;
             }
         }
-        
-        // 发送舵机角度数据到队列
         xQueueOverwrite(sharedData->servoAngleQueue, &servoData);
 
-        // ========================================
-        // 步骤 3: 读取 CAN 磁编角度
-        // ========================================
-        if (xQueuePeek(sharedData->canRxQueue, &sensorData, 0) == pdTRUE)
+        if (xQueuePeek(sharedData->canRxQueue, &sensorData, 0) == pdTRUE && sensorData.isValid)
         {
+            memset(&mappedData, 0, sizeof(mappedData));
+            mappedData.timestamp = sensorData.timestamp;
+            mappedData.isValid = true;
+
             for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
             {
-                canAngles[i] = convertCanToDeg(sensorData.encoderValues[i]);
+                if (sensorData.errorFlags[i]) {
+                    mappedData.validFlags[i] = 0;
+                    unwrapInitialized[i] = false;
+                    continue;
+                }
+
+                const int32_t orientedRaw = orientEncoderRaw(sensorData.encoderValues[i], g_encoderDirection[i]);
+                const int32_t continuous = unwrapEncoderToContinuous((uint8_t)i,
+                                                                     orientedRaw,
+                                                                     prevOrientedRaw,
+                                                                     continuousRaw,
+                                                                     unwrapInitialized);
+                const int32_t mappedCount = continuous - getEncoderOffset((uint8_t)i);
+
+                mappedData.angleValues[i] = clampToInt16(mappedCount);
+                mappedData.validFlags[i] = 1;
+                magAngles[i] = convertEncoderCountToDeg(mappedCount);
             }
+
+            xQueueOverwrite(sharedData->mappedAngleQueue, &mappedData);
         }
 
-        // ========================================
-        // 步骤 4: 读取目标角度
-        // ========================================
         if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
             memcpy(localTargets, sharedData->targetAngles, sizeof(localTargets));
             xSemaphoreGive(sharedData->targetAnglesMutex);
         }
 
-        // ========================================
-        // 步骤 5: PID 解算
-        // ========================================
-        angleSolver.compute(localTargets, canAngles, servoAngles, outPulses);
+        angleSolver.compute(localTargets, magAngles, servoAngles, outPulses);
 
-        // ========================================
-        // 步骤 6: 同步写入所有舵机
-        // ========================================
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
             uint8_t bus = jointMap[i].busIndex;
@@ -217,22 +272,16 @@ void taskSolver(void *parameter)
 
             if (pBus)
             {
-                // outPulses[i] 范围：-30719 到 30719
                 int16_t targetPos = constrain(outPulses[i], -30719, 30719);
                 pBus->setTarget(id, targetPos, 1000, 50);
             }
         }
 
-        // 统一发送
         servoBus0.syncWriteAll();
         servoBus1.syncWriteAll();
         servoBus2.syncWriteAll();
         servoBus3.syncWriteAll();
 
-        // ========================================
-        // 步骤 7: 控制周期延时（100Hz）
-        // ========================================
         vTaskDelay(pdMS_TO_TICKS(10));
-
     }
 }

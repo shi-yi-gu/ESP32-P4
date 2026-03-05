@@ -29,6 +29,7 @@ TARGET_BAUDRATE = 921600
 ENCODER_COUNT = 21
 CMD_CALIBRATE = b'\xCA'  # 校准触发指令
 ERROR_VAL_FLAG = 0xFFFF  # 固件中定义的错误标记
+ERROR_VAL_FLAG_ALT = 0x7FFF  # 映射角度通道中的无效标记
 
 
 # ================= 状态管理类 =================
@@ -56,20 +57,19 @@ state = MachineState()
 
 # ================= 协议处理逻辑 =================
 def process_data_packet(payload):
-    """ 解析传感器数据包 (Type 0x01) """
+    """ 解析磁编角度数据包 (Type 0x01, int16 映射角度) """
     if len(payload) != ENCODER_COUNT * 2:
         return
 
     for i in range(ENCODER_COUNT):
-        # 大端序解析两个字节
-        val = (payload[i * 2] << 8) | payload[i * 2 + 1]
+        val_u16 = (payload[i * 2] << 8) | payload[i * 2 + 1]
 
-        if val == ERROR_VAL_FLAG:
+        if val_u16 == ERROR_VAL_FLAG or val_u16 == ERROR_VAL_FLAG_ALT:
             state.errors[i] = True
             state.angles[i] = 0
         else:
             state.errors[i] = False
-            state.angles[i] = val
+            state.angles[i] = struct.unpack('>h', payload[i * 2:i * 2 + 2])[0]
 
     state.last_update = time.time()
 
@@ -201,7 +201,7 @@ def print_ui():
     print("-" * 65)
 
     # --- 编码器矩阵 ---
-    print(f"{Style.BRIGHT}编码器实时数据 (RAW | 角度):{Style.RESET_ALL}")
+    print(f"{Style.BRIGHT}编码器实时数据 (MappedCount | 角度):{Style.RESET_ALL}")
 
     rows = (ENCODER_COUNT + 2) // 3
     for r in range(rows):
@@ -220,7 +220,7 @@ def print_ui():
                 else:
                     # 正常数据，根据角度区分颜色方便观察变化
                     color = Fore.CYAN if idx % 2 == 0 else Fore.WHITE
-                    val_str = f"{color}{raw:05d} ({deg:6.2f}°){Style.RESET_ALL}"
+                    val_str = f"{color}{raw:6d} ({deg:7.2f}°){Style.RESET_ALL}"
 
                 line_str += f"{id_str} {val_str}   "
         print(line_str)

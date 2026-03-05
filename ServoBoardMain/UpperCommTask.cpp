@@ -11,7 +11,7 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_SERVO_ANGLE 0x03
 
 // 内部辅助：发送数据包
-void sendDataPacket(ServoStatus_t *pServo, RemoteSensorData_t *pSensor, ServoAngleData_t *pServoAngle)
+void sendDataPacket(ServoStatus_t *pServo, MappedAngleData_t *pMapped, ServoAngleData_t *pServoAngle)
 {
     uint8_t buffer[128]; // 增大缓冲区以容纳舵机角度数据
     size_t idx = 0;
@@ -28,15 +28,15 @@ void sendDataPacket(ServoStatus_t *pServo, RemoteSensorData_t *pSensor, ServoAng
         buffer[idx++] = g_calibrationUIStatus;
         // g_calibrationUIStatus = 0; // 发送后清除状态，避免重复
     }
-    else if (pSensor)
+    else if (pMapped)
     {
         // [常规] 传感器数据
         buffer[idx++] = PACKET_TYPE_SENSOR;
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
-            uint16_t val = pSensor->encoderValues[i];
-            buffer[idx++] = (val >> 8) & 0xFF;
-            buffer[idx++] = val & 0xFF;
+            int16_t val = pMapped->validFlags[i] ? pMapped->angleValues[i] : (int16_t)0x7FFF;
+            buffer[idx++] = (uint8_t)(((uint16_t)val >> 8) & 0xFF);
+            buffer[idx++] = (uint8_t)((uint16_t)val & 0xFF);
         }
     }
     else if (pServoAngle)
@@ -96,7 +96,7 @@ void applyTargetAngles(TaskSharedData_t* sharedData, float* angles, uint8_t coun
 void taskUpperComm(void *parameter)
 {
     TaskSharedData_t *sharedData = (TaskSharedData_t *)parameter;
-    RemoteSensorData_t sensorData;
+    MappedAngleData_t mappedData;
 
     Serial.println("<<<SYS_READY>>>"); // 启动标志
 
@@ -146,9 +146,9 @@ void taskUpperComm(void *parameter)
 
         // 尝试从队列获取最新的传感器数据
         // 使用 Receive 移除队列中旧数据，保证实时性
-        if (xQueueReceive(sharedData->canRxQueue, &sensorData, 0) == pdTRUE)
+        if (xQueueReceive(sharedData->mappedAngleQueue, &mappedData, 0) == pdTRUE)
         {
-            sendDataPacket(NULL, &sensorData, NULL);
+            sendDataPacket(NULL, &mappedData, NULL);
         }
         // 尝试从队列获取最新的舵机角度数据
         else {

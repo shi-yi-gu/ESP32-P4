@@ -69,11 +69,12 @@ void System_Init() {
     sharedData.canRxQueue  = xQueueCreate(1, sizeof(RemoteSensorData_t));
     sharedData.canTxQueue  = xQueueCreate(5, sizeof(RemoteCommand_t));
     sharedData.servoAngleQueue = xQueueCreate(1, sizeof(ServoAngleData_t));
+    sharedData.mappedAngleQueue = xQueueCreate(1, sizeof(MappedAngleData_t));
 
     
     if (!sharedData.cmdQueue || !sharedData.statusQueue ||
         !sharedData.canRxQueue || !sharedData.canTxQueue ||
-        !sharedData.servoAngleQueue) {
+        !sharedData.servoAngleQueue || !sharedData.mappedAngleQueue) {
         while (1);
     }
 

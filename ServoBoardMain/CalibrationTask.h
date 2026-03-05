@@ -52,6 +52,11 @@ struct JointCalibrationResult {
 extern JointCalibrationConfig g_jointCalibConfig[ENCODER_TOTAL_NUM];
 extern JointCalibrationResult g_jointCalibResult[ENCODER_TOTAL_NUM];
 
+// Encoder direction: +1 normal, -1 reversed.
+extern int8_t g_encoderDirection[ENCODER_TOTAL_NUM];
+// Manual fallback offsets in encoder counts (used when calibration result is unavailable).
+extern int32_t g_encoderOffsetManual[ENCODER_TOTAL_NUM];
+
 void initDefaultCalibrationConfig(JointCalibrationConfig* cfg, uint8_t count);
 bool runSingleJointCalibration(TaskSharedData_t* sharedData,
                                uint8_t jointIndex,
