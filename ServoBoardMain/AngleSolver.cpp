@@ -50,6 +50,7 @@ bool AngleSolver::compute(float* targetDegs, float* magActualDegs,
 {
     for (int i = 0; i < JOINT_COUNT; i++)
     {
+        targetDegs[i]=45;
         f_PID_Calculate(&_pids[i][0], targetDegs[i], magActualDegs[i]);
 
         float loop2Target = _pids[i][0].Output + servoActualDegs[i];

@@ -1,3 +1,18 @@
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(BOM_STRIP_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/../tools/strip_utf8_bom.py")
+set(BOM_SCAN_DIRS
+    "${CMAKE_CURRENT_LIST_DIR}"
+    "${CMAKE_CURRENT_LIST_DIR}/../ServoBoardMain"
+    "${CMAKE_CURRENT_LIST_DIR}/../libraries/FTServo_Arduino/src"
+)
+
+add_custom_target(strip_utf8_bom_sources ALL
+    COMMAND ${Python3_EXECUTABLE} "${BOM_STRIP_SCRIPT}" ${BOM_SCAN_DIRS}
+    COMMENT "Stripping UTF-8 BOM from project sources"
+    VERBATIM
+)
+
 set(APP_SRCS
     "app_main.cpp"
     "../ServoBoardMain/SystemTask.cpp"
@@ -22,3 +37,5 @@ idf_component_register(
         "../ServoBoardMain"
         "../libraries/FTServo_Arduino/src"
 )
+
+add_dependencies(${COMPONENT_LIB} strip_utf8_bom_sources)

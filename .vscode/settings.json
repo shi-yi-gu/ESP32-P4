@@ -1,3 +1,5 @@
 {
-    "idf.currentSetup": "E:/Espressif/Espressif/frameworks/esp-idf-v5.3.1/"
+    "idf.currentSetup": "E:/Espressif/Espressif/frameworks/esp-idf-v5.3.1/",
+    "files.encoding": "utf8",
+    "files.autoGuessEncoding": false
 }
