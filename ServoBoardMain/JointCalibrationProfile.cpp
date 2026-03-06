@@ -1,11 +1,17 @@
 #include "JointCalibrationProfile.h"
 
+// 14-bit magnetic encoder: 16384 counts per revolution.
+static constexpr float kEncoderCountsPerRev = 16384.0f;
+static constexpr int32_t degToEnc(float deg) {
+    return (int32_t)(deg * kEncoderCountsPerRev / 360.0f + (deg >= 0.0f ? 0.5f : -0.5f));
+}
+
 // Default calibration values for joints without dedicated tuning.
 static const JointCalibrationConfig kDefaultJointCalib = {
-    4000,  // angleScope
-    120,   // bottomReserved
-    120,   // topReserved
-    240,   // angleReserved
+    degToEnc(90.0f), // angleScope (deg -> count)
+    degToEnc(3.0f),  // bottomReserved (deg -> count)
+    degToEnc(3.0f),  // topReserved (deg -> count)
+    degToEnc(6.0f),  // angleReserved (deg -> count)
     180,   // loadThreshold
     10,    // tightenStep
     150,   // tightenSpeed
@@ -17,19 +23,23 @@ static const JointCalibrationConfig kDefaultJointCalib = {
 // Joint 0~3: dedicated entries for real hardware tuning.
 // You can manually update these four blocks with measured values.
 static const JointCalibrationConfig kJoint0Calib = {
-    90, 2, 2, 45, 180, 10, 150, 10, 20, 5000
+    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint1Calib = {
-    85, 2, 2, 40, 180, 10, 150, 10, 20, 5000
+    degToEnc(85.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(40.0f),
+    180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint2Calib = {
-    90, 2, 2, 45, 180, 10, 150, 10, 20, 5000
+    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint3Calib = {
-    100, 2, 2, 50, 180, 10, 150, 10, 20, 5000
+    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
+    180, 10, 150, 10, 20, 5000
 };
 
 const JointCalibrationConfig kJointCalibrationProfile[ENCODER_TOTAL_NUM] = {

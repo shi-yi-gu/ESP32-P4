@@ -65,11 +65,15 @@ static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
 static const uint8_t kClosedLoopJointCount = 4; // test only joints 0~3
 static const uint8_t kTestActiveBusIndex = 0;   // currently only bus0
-static const uint8_t kTestActiveServoId = 1;    // currently only ID 1 connected
+static const uint8_t kTestActiveServoIdMin = 1; // debug range on bus0
+static const uint8_t kTestActiveServoIdMax = 4; // debug range on bus0
+static const uint32_t kCanBusOfflineTimeoutMs = 300; // bus-level offline threshold (debounced for jitter)
 
-static int16_t clampToInt16(int32_t value)
+// 0x7FFF is reserved by upper protocol as "DISCONNECT" sentinel.
+// Clamp valid mapped counts away from this value to avoid false disconnect display.
+static int16_t clampMappedCountForProtocol(int32_t value)
 {
-    if (value > 32767) return 32767;
+    if (value > 32766) return 32766;
     if (value < -32768) return -32768;
     return (int16_t)value;
 }
@@ -139,7 +143,7 @@ void taskSolver(void* parameter)
         return;
     }
 
-    const uint8_t bus0Ids[] = {1};
+    const uint8_t bus0Ids[] = {1, 2, 3, 4};
     const uint8_t bus0Count = (uint8_t)(sizeof(bus0Ids) / sizeof(bus0Ids[0]));
 
     float localTargets[ENCODER_TOTAL_NUM] = {0.0f};
@@ -199,20 +203,22 @@ void taskSolver(void* parameter)
         }
         xQueueOverwrite(sharedData->servoAngleQueue, &servoData);
 
-        if (xQueuePeek(sharedData->canRxQueue, &sensorData, 0) == pdTRUE && sensorData.isValid)
-        {
-            memset(&mappedData, 0, sizeof(mappedData));
-            mappedData.timestamp = sensorData.timestamp;
-            mappedData.isValid = true;
+        bool canBusOnline = false;
+        if (xQueuePeek(sharedData->canRxQueue, &sensorData, 0) == pdTRUE && sensorData.isValid) {
+            const uint32_t nowMs = millis();
+            canBusOnline = (nowMs - sensorData.timestamp) <= kCanBusOfflineTimeoutMs;
+        }
 
+        memset(&mappedData, 0, sizeof(mappedData));
+        mappedData.timestamp = millis();
+        mappedData.isValid = canBusOnline;
+
+        if (canBusOnline)
+        {
+            // Project rule: per-encoder faults are handled by lower controller.
+            // Here we only gate on CAN bus availability, not sensorData.errorFlags[i].
             for (int i = 0; i < kClosedLoopJointCount; i++)
             {
-                if (sensorData.errorFlags[i]) {
-                    mappedData.validFlags[i] = 0;
-                    unwrapInitialized[i] = false;
-                    continue;
-                }
-
                 const int32_t orientedRaw = orientEncoderRaw(sensorData.encoderValues[i], g_encoderDirection[i]);
                 const int32_t continuous = unwrapEncoderToContinuous((uint8_t)i,
                                                                      orientedRaw,
@@ -221,13 +227,21 @@ void taskSolver(void* parameter)
                                                                      unwrapInitialized);
                 const int32_t mappedCount = continuous - getEncoderOffset((uint8_t)i);
 
-                mappedData.angleValues[i] = clampToInt16(mappedCount);
+                mappedData.angleValues[i] = clampMappedCountForProtocol(mappedCount);
                 mappedData.validFlags[i] = 1;
                 magAngles[i] = convertEncoderCountToDeg(mappedCount);
             }
-
-            xQueueOverwrite(sharedData->mappedAngleQueue, &mappedData);
         }
+        else
+        {
+            // Bus offline: mark all test joints invalid and reset unwrapping state.
+            for (int i = 0; i < kClosedLoopJointCount; i++) {
+                mappedData.validFlags[i] = 0;
+                unwrapInitialized[i] = false;
+            }
+        }
+
+        xQueueOverwrite(sharedData->mappedAngleQueue, &mappedData);
 
         if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
@@ -243,8 +257,11 @@ void taskSolver(void* parameter)
             uint8_t id = jointMap[i].servoID;
             ServoBusManager* pBus = getBusByIndex(bus);
 
-            // Test stage: only one servo is physically connected (bus0/id1).
-            if (pBus && bus == kTestActiveBusIndex && id == kTestActiveServoId)
+            // Test stage: send to bus0 IDs 1~4 for debug.
+            if (pBus &&
+                bus == kTestActiveBusIndex &&
+                id >= kTestActiveServoIdMin &&
+                id <= kTestActiveServoIdMax)
             {
                 int16_t targetPos = constrain(outPulses[i], -30719, 30719);
                 pBus->setTarget(id, targetPos, 1000, 50);

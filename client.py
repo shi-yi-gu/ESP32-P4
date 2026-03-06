@@ -28,8 +28,9 @@ except ImportError:
 TARGET_BAUDRATE = 921600
 ENCODER_COUNT = 21
 CMD_CALIBRATE = b'\xCA'  # 校准触发指令
-ERROR_VAL_FLAG = 0xFFFF  # 固件中定义的错误标记
-ERROR_VAL_FLAG_ALT = 0x7FFF  # 映射角度通道中的无效标记
+# Mapped angle packet (Type 0x01) uses 0x7FFF as disconnect sentinel.
+# Note: 0xFFFF is valid signed int16 value (-1) for mapped count.
+ERROR_VAL_FLAG_ALT = 0x7FFF
 
 
 # ================= 状态管理类 =================
@@ -64,7 +65,7 @@ def process_data_packet(payload):
     for i in range(ENCODER_COUNT):
         val_u16 = (payload[i * 2] << 8) | payload[i * 2 + 1]
 
-        if val_u16 == ERROR_VAL_FLAG or val_u16 == ERROR_VAL_FLAG_ALT:
+        if val_u16 == ERROR_VAL_FLAG_ALT:
             state.errors[i] = True
             state.angles[i] = 0
         else:

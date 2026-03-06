@@ -10,6 +10,7 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_SENSOR 0x01
 #define PACKET_TYPE_CALIB_ACK 0x02
 #define PACKET_TYPE_SERVO_ANGLE 0x03
+#define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
 static void sendDataPacket(ServoStatus_t* pServo, MappedAngleData_t* pMapped, ServoAngleData_t* pServoAngle)
 {
@@ -28,10 +29,19 @@ static void sendDataPacket(ServoStatus_t* pServo, MappedAngleData_t* pMapped, Se
     }
     else if (pMapped)
     {
+        static const uint8_t kDisplayJointCount = 4; // test stage: only joints 0~3 are active
         buffer[idx++] = PACKET_TYPE_SENSOR;
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
-            int16_t val = pMapped->validFlags[i] ? pMapped->angleValues[i] : (int16_t)0x7FFF;
+            int16_t val = PROTOCOL_DISCONNECT_SENTINEL;
+            const bool channelValid = (i < kDisplayJointCount) ? pMapped->isValid : (pMapped->validFlags[i] != 0);
+            if (channelValid) {
+                val = pMapped->angleValues[i];
+                // Guard: avoid sending disconnect sentinel as valid data.
+                if (val == PROTOCOL_DISCONNECT_SENTINEL) {
+                    val = (int16_t)0x7FFE;
+                }
+            }
             buffer[idx++] = (uint8_t)(((uint16_t)val >> 8) & 0xFF);
             buffer[idx++] = (uint8_t)((uint16_t)val & 0xFF);
         }
