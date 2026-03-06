@@ -78,7 +78,7 @@ void System_Init() {
 
     float pidConfigs[2][PID_PARAMETER_NUM] = {
         {20.0f, 0.0f, 0.0f, 0.0f, 0.0f, 3000.0f},
-        {5.0f, 0.0f, 0.0f, 0.0f, 0.0f, 30719.0f}
+        {10.0f, 0.0f, 0.0f, 0.0f, 0.0f, 30719.0f}
     };
     angleSolver.setPIDParams(pidConfigs);
 
