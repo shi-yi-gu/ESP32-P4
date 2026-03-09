@@ -3,6 +3,8 @@
 #include "TaskSharedData.h"
 #include "CalibrationTask.h"
 
+#include <string.h>
+
 extern volatile uint8_t g_calibrationUIStatus;
 
 #define PROTOCOL_HEADER 0xFE
@@ -10,9 +12,23 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_SENSOR 0x01
 #define PACKET_TYPE_CALIB_ACK 0x02
 #define PACKET_TYPE_SERVO_ANGLE 0x03
+#define PACKET_TYPE_JOINT1_DEBUG 0x04
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
-static void sendDataPacket(ServoStatus_t* pServo, MappedAngleData_t* pMapped, ServoAngleData_t* pServoAngle)
+static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
+{
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    buffer[(*idx)++] = (uint8_t)((bits >> 24) & 0xFF);
+    buffer[(*idx)++] = (uint8_t)((bits >> 16) & 0xFF);
+    buffer[(*idx)++] = (uint8_t)((bits >> 8) & 0xFF);
+    buffer[(*idx)++] = (uint8_t)(bits & 0xFF);
+}
+
+static void sendDataPacket(ServoStatus_t* pServo,
+                           MappedAngleData_t* pMapped,
+                           ServoAngleData_t* pServoAngle,
+                           JointDebugData_t* pJointDebug)
 {
     (void)pServo;
 
@@ -62,6 +78,16 @@ static void sendDataPacket(ServoStatus_t* pServo, MappedAngleData_t* pMapped, Se
         {
             buffer[idx++] = pServoAngle->onlineStatus[i];
         }
+    }
+    else if (pJointDebug)
+    {
+        buffer[idx++] = PACKET_TYPE_JOINT1_DEBUG;
+        buffer[idx++] = pJointDebug->valid;
+        appendFloatBigEndian(buffer, &idx, pJointDebug->targetDeg);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->magActualDeg);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->loop1Output);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->loop2Actual);
+        appendFloatBigEndian(buffer, &idx, pJointDebug->loop2Output);
     }
     else
     {
@@ -122,18 +148,26 @@ void taskUpperComm(void* parameter)
 
         if (xQueueReceive(sharedData->mappedAngleQueue, &mappedData, 0) == pdTRUE)
         {
-            sendDataPacket(NULL, &mappedData, NULL);
+            sendDataPacket(NULL, &mappedData, NULL, NULL);
         }
         else
         {
-            ServoAngleData_t servoAngleData;
-            if (xQueueReceive(sharedData->servoAngleQueue, &servoAngleData, 0) == pdTRUE)
+            JointDebugData_t jointDebugData;
+            if (xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
             {
-                sendDataPacket(NULL, NULL, &servoAngleData);
+                sendDataPacket(NULL, NULL, NULL, &jointDebugData);
             }
-            else if (g_calibrationUIStatus != 0)
+            else
             {
-                sendDataPacket(NULL, NULL, NULL);
+                ServoAngleData_t servoAngleData;
+                if (xQueueReceive(sharedData->servoAngleQueue, &servoAngleData, 0) == pdTRUE)
+                {
+                    sendDataPacket(NULL, NULL, &servoAngleData, NULL);
+                }
+                else if (g_calibrationUIStatus != 0)
+                {
+                    sendDataPacket(NULL, NULL, NULL, NULL);
+                }
             }
         }
 

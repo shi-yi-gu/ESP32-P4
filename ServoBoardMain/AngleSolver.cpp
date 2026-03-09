@@ -46,25 +46,34 @@ void AngleSolver::setPIDParams(float pidParams[][PID_PARAMETER_NUM])
 }
 
 bool AngleSolver::compute(float* targetDegs, float* magActualDegs,
-                          float* servoActualDegs, int16_t* outServoPulses)
+                          const int32_t* absolutePosition, int16_t* outServoPulses)
 {
     for (int i = 0; i < JOINT_COUNT; i++)
     {
-        targetDegs[i]=45;
+        targetDegs[i]=30;
         f_PID_Calculate(&_pids[i][0], targetDegs[i], magActualDegs[i]);
 
-        float loop2Target = _pids[i][0].Output + servoActualDegs[i];
-        float loop2Actual = servoActualDegs[i];
+        float loop2Target = _pids[i][0].Output + (float)absolutePosition[i];
+        float loop2Actual = (float)absolutePosition[i];
         f_PID_Calculate(&_pids[i][1], loop2Target, loop2Actual);
 
-        outServoPulses[i] = (int16_t)_pids[i][1].Output;
+        outServoPulses[i] = (int16_t)_pids[i][1].Output+absolutePosition[i];
     }
     return true;
+}
+
+float AngleSolver::getPidOutput(uint8_t jointIndex, uint8_t loopIndex) const
+{
+    if (jointIndex >= JOINT_COUNT || loopIndex > 1) {
+        return 0.0f;
+    }
+    return _pids[jointIndex][loopIndex].Output;
 }
 
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
 static const uint8_t kClosedLoopJointCount = 4; // test only joints 0~3
+static const uint8_t kDebugJointIndex = 1;       // stream debug info for joint-1
 static const uint8_t kTestActiveBusIndex = 0;   // currently only bus0
 static const uint8_t kTestActiveServoIdMin = 1; // debug range on bus0
 static const uint8_t kTestActiveServoIdMax = 4; // debug range on bus0
@@ -150,6 +159,7 @@ void taskSolver(void* parameter)
     float localTargets[ENCODER_TOTAL_NUM] = {0.0f};
     float magAngles[ENCODER_TOTAL_NUM] = {0.0f};
     float servoAngles[ENCODER_TOTAL_NUM] = {0.0f};
+    int32_t absolutePosition[ENCODER_TOTAL_NUM] = {0};
     int16_t outPulses[ENCODER_TOTAL_NUM] = {0};
 
     RemoteSensorData_t sensorData;
@@ -192,12 +202,14 @@ void taskSolver(void* parameter)
             {
                 int32_t absPos = pBus->getAbsolutePosition(id);
                 servoAngles[i] = (float)absPos * 360.0f / 4096.0f;
+                absolutePosition[i] = absPos;
                 servoData.servoAngles[i] = absPos;
                 servoData.onlineStatus[i] = 1;
             }
             else
             {
                 servoAngles[i] = 0.0f;
+                absolutePosition[i] = 0;
                 servoData.servoAngles[i] = 0;
                 servoData.onlineStatus[i] = 0;
             }
@@ -250,7 +262,21 @@ void taskSolver(void* parameter)
             xSemaphoreGive(sharedData->targetAnglesMutex);
         }
 
-        angleSolver.compute(localTargets, magAngles, servoAngles, outPulses);
+        angleSolver.compute(localTargets, magAngles, absolutePosition, outPulses);
+
+        if (sharedData->jointDebugQueue && kDebugJointIndex < kClosedLoopJointCount)
+        {
+            JointDebugData_t debugData;
+            memset(&debugData, 0, sizeof(debugData));
+            debugData.timestamp = millis();
+            debugData.valid = (mappedData.validFlags[kDebugJointIndex] != 0) ? 1 : 0;
+            debugData.targetDeg = localTargets[kDebugJointIndex];
+            debugData.magActualDeg = magAngles[kDebugJointIndex];
+            debugData.loop1Output = angleSolver.getPidOutput(kDebugJointIndex, 0);
+            debugData.loop2Actual = (float)absolutePosition[kDebugJointIndex];
+            debugData.loop2Output = angleSolver.getPidOutput(kDebugJointIndex, 1);
+            xQueueOverwrite(sharedData->jointDebugQueue, &debugData);
+        }
 
         for (int i = 0; i < kClosedLoopJointCount; i++)
         {

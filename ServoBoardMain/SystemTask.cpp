@@ -47,10 +47,12 @@ void System_Init() {
     sharedData.canTxQueue = xQueueCreate(5, sizeof(RemoteCommand_t));
     sharedData.servoAngleQueue = xQueueCreate(1, sizeof(ServoAngleData_t));
     sharedData.mappedAngleQueue = xQueueCreate(1, sizeof(MappedAngleData_t));
+    sharedData.jointDebugQueue = xQueueCreate(1, sizeof(JointDebugData_t));
 
     if (!sharedData.cmdQueue || !sharedData.statusQueue ||
         !sharedData.canRxQueue || !sharedData.canTxQueue ||
-        !sharedData.servoAngleQueue || !sharedData.mappedAngleQueue) {
+        !sharedData.servoAngleQueue || !sharedData.mappedAngleQueue ||
+        !sharedData.jointDebugQueue) {
         while (1) {}
     }
 
@@ -77,8 +79,8 @@ void System_Init() {
     angleSolver.init(zeros, ratios, dirs);
 
     float pidConfigs[2][PID_PARAMETER_NUM] = {
-        {15.0f, 0.0f, 0.0f, 0.0f, 200.0f, 3000.0f},
-        {15.0f, 0.0f, 0.0f, 0.0f, 0.0f, 30719.0f}
+        {15.0f, 0.2f, 0.0f, 0.0f, 100.0f, 300.0f},
+        {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 30719.0f}
     };
     angleSolver.setPIDParams(pidConfigs);
 
