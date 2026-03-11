@@ -28,15 +28,16 @@ int8_t g_encoderDirection[ENCODER_TOTAL_NUM] = {
 // Manual fallback offset table.
 int32_t g_encoderOffsetManual[ENCODER_TOTAL_NUM] = {0};
 
-// Test mode: only first 4 joints use manual encoderMax.
+// Test mode: manual encoderMax for all joints.
 // Replace these values with your measured encoderMax.
-static const uint8_t kTestJointCount = 4;
-static const int32_t kManualEncoderMax[kTestJointCount] =    {
-    0, 13213, 0, 0
+static const uint8_t kTestJointCount = ENCODER_TOTAL_NUM;
+static const int32_t kManualEncoderMax[kTestJointCount] = {
+    0, 0, 0, 0,
+    0, 13400, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0, 0
 };
-// static const int32_t kManualEncoderMax[kTestJointCount] = {
-//     0, 0, 0, 0
-// };
 
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
@@ -218,3 +219,5 @@ void taskServoCalibration(void* parameter) {
     g_calibrationUIStatus = CALIB_STATUS_IDLE;
     vTaskDelete(NULL);
 }
+
+

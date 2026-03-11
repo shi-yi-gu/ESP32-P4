@@ -45,12 +45,11 @@ static void sendDataPacket(ServoStatus_t* pServo,
     }
     else if (pMapped)
     {
-        static const uint8_t kDisplayJointCount = 4; // test stage: only joints 0~3 are active
         buffer[idx++] = PACKET_TYPE_SENSOR;
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
             int16_t val = PROTOCOL_DISCONNECT_SENTINEL;
-            const bool channelValid = (i < kDisplayJointCount) ? pMapped->isValid : (pMapped->validFlags[i] != 0);
+            const bool channelValid = pMapped->isValid && (pMapped->validFlags[i] != 0);
             if (channelValid) {
                 val = pMapped->angleValues[i];
                 // Guard: avoid sending disconnect sentinel as valid data.
@@ -174,3 +173,4 @@ void taskUpperComm(void* parameter)
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
+

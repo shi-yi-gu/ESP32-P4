@@ -29,11 +29,10 @@ JointMapItem jointMap[ENCODER_TOTAL_NUM] = {
     // Bus 2
     {2, 1}, {2, 2}, {2, 3}, {2, 4},
     // Bus 3
-    {3, 1}, {3, 2}, {3, 3}, {3, 4}, {3, 5},
-    // Remaining 4 joints
-    {0, 5}, {1, 5}, {2, 5}, {3, 6}
+    {3, 1}, {3, 2}, {3, 3}, {3, 4},
+    // Remaining 5 joints (start from bus 0)
+    {0, 5}, {1, 5}, {2, 5}, {3, 5}, {3, 6}
 };
-
 void System_Init() {
     Serial.begin(921600);
     while (!Serial) {
@@ -121,3 +120,4 @@ void System_Init() {
 void System_Loop() {
     vTaskDelay(pdMS_TO_TICKS(10));
 }
+

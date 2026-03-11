@@ -50,7 +50,6 @@ bool AngleSolver::compute(float* targetDegs, float* magActualDegs,
 {
     for (int i = 0; i < JOINT_COUNT; i++)
     {
-        targetDegs[i]=30;
         f_PID_Calculate(&_pids[i][0], targetDegs[i], magActualDegs[i]);
 
         float loop2Target = _pids[i][0].Output + (float)absolutePosition[i];
@@ -72,11 +71,17 @@ float AngleSolver::getPidOutput(uint8_t jointIndex, uint8_t loopIndex) const
 
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
-static const uint8_t kClosedLoopJointCount = 4; // test only joints 0~3
-static const uint8_t kDebugJointIndex = 1;       // stream debug info for joint-1
-static const uint8_t kTestActiveBusIndex = 0;   // currently only bus0
-static const uint8_t kTestActiveServoIdMin = 1; // debug range on bus0
-static const uint8_t kTestActiveServoIdMax = 4; // debug range on bus0
+static const uint8_t kClosedLoopJointStart = 4; // test joints 4~7 (bus1)
+static const uint8_t kClosedLoopJointCount = 4;
+static const uint8_t kDebugJointIndex = 5;       // stream debug info for joint-5
+static const uint8_t kTestActiveBusIndex = 1;   // currently only bus1
+static const uint8_t kTestActiveServoIdMin = 1; // debug range on bus1
+static const uint8_t kTestActiveServoIdMax = 4; // debug range on bus1
+static const float kDebugTargetMinDeg = 3.f;
+static const float kDebugTargetMaxDeg = 30.0f;
+static const uint32_t kDebugTargetHoldMs = 2500;
+static const uint32_t kDebugTargetMoveMs = 5000;
+static const bool kDebugUseSineTarget = true;
 static const uint32_t kCanBusOfflineTimeoutMs = 300; // bus-level offline threshold (debounced for jitter)
 
 // 0x7FFF is reserved by upper protocol as "DISCONNECT" sentinel.
@@ -133,6 +138,50 @@ static float convertEncoderCountToDeg(int32_t encoderCount)
     return (float)encoderCount * 360.0f / (float)kEncoderModulo;
 }
 
+static float computeSineTarget(float minDeg,
+                               float maxDeg,
+                               uint32_t holdMs,
+                               uint32_t moveMs,
+                               uint32_t nowMs)
+{
+    if (maxDeg < minDeg) {
+        float tmp = minDeg;
+        minDeg = maxDeg;
+        maxDeg = tmp;
+    }
+
+    const float range = maxDeg - minDeg;
+    if (range == 0.0f) return minDeg;
+
+    if (moveMs == 0) {
+        const uint32_t cycle = holdMs * 2;
+        if (cycle == 0) return minDeg;
+        const uint32_t t = nowMs % cycle;
+        return (t < holdMs) ? minDeg : maxDeg;
+    }
+
+    const uint32_t cycle = holdMs * 2 + moveMs * 2;
+    if (cycle == 0) return minDeg;
+
+    uint32_t t = nowMs % cycle;
+    if (t < holdMs) return minDeg;
+    t -= holdMs;
+
+    if (t < moveMs) {
+        const float s = (float)t / (float)moveMs;
+        const float w = 0.5f - 0.5f * cosf(3.1415926f * s);
+        return minDeg + range * w;
+    }
+
+    t -= moveMs;
+    if (t < holdMs) return maxDeg;
+    t -= holdMs;
+
+    const float s = (float)t / (float)moveMs;
+    const float w = 0.5f - 0.5f * cosf(3.1415926f * s);
+    return maxDeg - range * w;
+}
+
 static ServoBusManager* getBusByIndex(uint8_t busIndex)
 {
     switch (busIndex)
@@ -153,8 +202,8 @@ void taskSolver(void* parameter)
         return;
     }
 
-    const uint8_t bus0Ids[] = {1, 2, 3, 4};
-    const uint8_t bus0Count = (uint8_t)(sizeof(bus0Ids) / sizeof(bus0Ids[0]));
+    const uint8_t testBusIds[] = {1, 2, 3, 4};
+    const uint8_t testBusCount = (uint8_t)(sizeof(testBusIds) / sizeof(testBusIds[0]));
 
     float localTargets[ENCODER_TOTAL_NUM] = {0.0f};
     float magAngles[ENCODER_TOTAL_NUM] = {0.0f};
@@ -174,17 +223,22 @@ void taskSolver(void* parameter)
 
     while (1)
     {
-        int bus0SuccessCount = servoBus0.syncReadPositions(bus0Ids, bus0Count);
-        (void)bus0SuccessCount;
+        ServoBusManager* testBus = getBusByIndex(kTestActiveBusIndex);
+        int testBusSuccessCount = testBus ? testBus->syncReadPositions(testBusIds, testBusCount) : 0;
+        (void)testBusSuccessCount;
 
 #if SOLVER_DIAG_LOG_ENABLE
         uint32_t nowMs = millis();
         if (nowMs - lastDiagLogMs >= 500) {
             lastDiagLogMs = nowMs;
-            Serial.printf("[Solver] bus0 read=%d online=%d abs=%ld\r\n",
-                          bus0SuccessCount,
-                          servoBus0.isOnline(1) ? 1 : 0,
-                          (long)servoBus0.getAbsolutePosition(1));
+            const uint8_t diagId = kTestActiveServoIdMin;
+            const int diagOnline = (testBus && testBus->isOnline(diagId)) ? 1 : 0;
+            const long diagAbs = testBus ? (long)testBus->getAbsolutePosition(diagId) : 0;
+            Serial.printf("[Solver] bus%d read=%d online=%d abs=%ld\r\n",
+                          kTestActiveBusIndex,
+                          testBusSuccessCount,
+                          diagOnline,
+                          diagAbs);
         }
 #endif
 
@@ -194,24 +248,25 @@ void taskSolver(void* parameter)
 
         for (int i = 0; i < kClosedLoopJointCount; i++)
         {
-            uint8_t bus = jointMap[i].busIndex;
-            uint8_t id = jointMap[i].servoID;
+            uint8_t jointIndex = kClosedLoopJointStart + i;
+            uint8_t bus = jointMap[jointIndex].busIndex;
+            uint8_t id = jointMap[jointIndex].servoID;
             ServoBusManager* pBus = getBusByIndex(bus);
 
             if (pBus && pBus->isOnline(id))
             {
                 int32_t absPos = pBus->getAbsolutePosition(id);
-                servoAngles[i] = (float)absPos * 360.0f / 4096.0f;
-                absolutePosition[i] = absPos;
-                servoData.servoAngles[i] = absPos;
-                servoData.onlineStatus[i] = 1;
+                servoAngles[jointIndex] = (float)absPos * 360.0f / 4096.0f;
+                absolutePosition[jointIndex] = absPos;
+                servoData.servoAngles[jointIndex] = absPos;
+                servoData.onlineStatus[jointIndex] = 1;
             }
             else
             {
-                servoAngles[i] = 0.0f;
-                absolutePosition[i] = 0;
-                servoData.servoAngles[i] = 0;
-                servoData.onlineStatus[i] = 0;
+                servoAngles[jointIndex] = 0.0f;
+                absolutePosition[jointIndex] = 0;
+                servoData.servoAngles[jointIndex] = 0;
+                servoData.onlineStatus[jointIndex] = 0;
             }
         }
         xQueueOverwrite(sharedData->servoAngleQueue, &servoData);
@@ -228,10 +283,15 @@ void taskSolver(void* parameter)
 
         if (canBusOnline)
         {
-            // Project rule: per-encoder faults are handled by lower controller.
-            // Here we only gate on CAN bus availability, not sensorData.errorFlags[i].
-            for (int i = 0; i < kClosedLoopJointCount; i++)
+            // Gate on CAN bus availability and per-encoder validity flags.
+            for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
             {
+                if (sensorData.errorFlags[i] != 0) {
+                    mappedData.validFlags[i] = 0;
+                    unwrapInitialized[i] = false;
+                    magAngles[i] = 0.0f;
+                    continue;
+                }
                 const int32_t orientedRaw = orientEncoderRaw(sensorData.encoderValues[i], g_encoderDirection[i]);
                 const int32_t continuous = unwrapEncoderToContinuous((uint8_t)i,
                                                                      orientedRaw,
@@ -247,8 +307,8 @@ void taskSolver(void* parameter)
         }
         else
         {
-            // Bus offline: mark all test joints invalid and reset unwrapping state.
-            for (int i = 0; i < kClosedLoopJointCount; i++) {
+            // Bus offline: mark all joints invalid and reset unwrapping state.
+            for (int i = 0; i < ENCODER_TOTAL_NUM; i++) {
                 mappedData.validFlags[i] = 0;
                 unwrapInitialized[i] = false;
             }
@@ -262,9 +322,20 @@ void taskSolver(void* parameter)
             xSemaphoreGive(sharedData->targetAnglesMutex);
         }
 
+        if (kDebugUseSineTarget && kDebugJointIndex < ENCODER_TOTAL_NUM) {
+            localTargets[kDebugJointIndex] = computeSineTarget(
+                kDebugTargetMinDeg,
+                kDebugTargetMaxDeg,
+                kDebugTargetHoldMs,
+                kDebugTargetMoveMs,
+                millis());
+        }
+
         angleSolver.compute(localTargets, magAngles, absolutePosition, outPulses);
 
-        if (sharedData->jointDebugQueue && kDebugJointIndex < kClosedLoopJointCount)
+        if (sharedData->jointDebugQueue &&
+            kDebugJointIndex >= kClosedLoopJointStart &&
+            kDebugJointIndex < (kClosedLoopJointStart + kClosedLoopJointCount))
         {
             JointDebugData_t debugData;
             memset(&debugData, 0, sizeof(debugData));
@@ -280,23 +351,27 @@ void taskSolver(void* parameter)
 
         for (int i = 0; i < kClosedLoopJointCount; i++)
         {
-            uint8_t bus = jointMap[i].busIndex;
-            uint8_t id = jointMap[i].servoID;
+            uint8_t jointIndex = kClosedLoopJointStart + i;
+            uint8_t bus = jointMap[jointIndex].busIndex;
+            uint8_t id = jointMap[jointIndex].servoID;
             ServoBusManager* pBus = getBusByIndex(bus);
 
-            // Test stage: send to bus0 IDs 1~4 for debug.
+            // Test stage: send to active bus IDs for debug.
             if (pBus &&
                 bus == kTestActiveBusIndex &&
                 id >= kTestActiveServoIdMin &&
                 id <= kTestActiveServoIdMax)
             {
-                int16_t targetPos = constrain(outPulses[i], -30719, 30719);
+                int16_t targetPos = constrain(outPulses[jointIndex], -30719, 30719);
                 pBus->setTarget(id, targetPos, 1000, 50);
             }
         }
 
-        servoBus0.syncWriteAll();
+        if (testBus) {
+            testBus->syncWriteAll();
+        }
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
+
