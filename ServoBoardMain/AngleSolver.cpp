@@ -138,6 +138,34 @@ static float convertEncoderCountToDeg(int32_t encoderCount)
     return (float)encoderCount * 360.0f / (float)kEncoderModulo;
 }
 
+static bool shouldEmergencyStop(bool canBusOnline,
+                                const RemoteSensorData_t& sensorData,
+                                const MappedAngleData_t& mappedData,
+                                uint8_t jointIndex)
+{
+    if (kDebugUseSineTarget) {
+        return false;
+    }
+
+    if (!canBusOnline || !sensorData.isValid) {
+        return true;
+    }
+
+    if (jointIndex >= ENCODER_TOTAL_NUM) {
+        return true;
+    }
+
+    if (sensorData.errorFlags[jointIndex] != 0) {
+        return true;
+    }
+
+    if (mappedData.validFlags[jointIndex] == 0) {
+        return true;
+    }
+
+    return false;
+}
+
 static float computeSineTarget(float minDeg,
                                float maxDeg,
                                uint32_t holdMs,
@@ -223,6 +251,7 @@ void taskSolver(void* parameter)
 
     while (1)
     {
+        bool busWritePending[NUM_BUSES] = {false};
         ServoBusManager* testBus = getBusByIndex(kTestActiveBusIndex);
         int testBusSuccessCount = testBus ? testBus->syncReadPositions(testBusIds, testBusCount) : 0;
         (void)testBusSuccessCount;
@@ -356,19 +385,47 @@ void taskSolver(void* parameter)
             uint8_t id = jointMap[jointIndex].servoID;
             ServoBusManager* pBus = getBusByIndex(bus);
 
-            // Test stage: send to active bus IDs for debug.
-            if (pBus &&
-                bus == kTestActiveBusIndex &&
-                id >= kTestActiveServoIdMin &&
-                id <= kTestActiveServoIdMax)
-            {
+            if (shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex)) {
+                if (pBus && pBus->isOnline(id)) {
+                    int16_t holdPos = constrain(absolutePosition[jointIndex], -30719, 30719);
+                    pBus->setTarget(id, holdPos, 1000, 50);
+                    if (bus < NUM_BUSES) {
+                        busWritePending[bus] = true;
+                    }
+                }
+                continue;
+            }
+
+            if (kDebugUseSineTarget) {
+                // Test stage: send to active bus IDs for debug.
+                if (pBus &&
+                    bus == kTestActiveBusIndex &&
+                    id >= kTestActiveServoIdMin &&
+                    id <= kTestActiveServoIdMax)
+                {
+                    int16_t targetPos = constrain(outPulses[jointIndex], -30719, 30719);
+                    pBus->setTarget(id, targetPos, 1000, 50);
+                    if (bus < NUM_BUSES) {
+                        busWritePending[bus] = true;
+                    }
+                }
+            } else if (pBus) {
                 int16_t targetPos = constrain(outPulses[jointIndex], -30719, 30719);
                 pBus->setTarget(id, targetPos, 1000, 50);
+                if (bus < NUM_BUSES) {
+                    busWritePending[bus] = true;
+                }
             }
         }
 
-        if (testBus) {
-            testBus->syncWriteAll();
+        for (uint8_t bus = 0; bus < NUM_BUSES; bus++)
+        {
+            if (busWritePending[bus]) {
+                ServoBusManager* pBus = getBusByIndex(bus);
+                if (pBus) {
+                    pBus->syncWriteAll();
+                }
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));
