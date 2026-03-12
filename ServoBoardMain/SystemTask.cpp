@@ -47,7 +47,7 @@ void System_Init() {
     sharedData.servoAngleQueue = xQueueCreate(1, sizeof(ServoAngleData_t));
     sharedData.servoTelemetryQueue = xQueueCreate(1, sizeof(ServoTelemetryData_t));
     sharedData.mappedAngleQueue = xQueueCreate(1, sizeof(MappedAngleData_t));
-    sharedData.jointDebugQueue = xQueueCreate(1, sizeof(JointDebugData_t));
+    sharedData.jointDebugQueue = xQueueCreate(3, sizeof(JointDebugData_t));
 
     if (!sharedData.cmdQueue || !sharedData.statusQueue ||
         !sharedData.canRxQueue || !sharedData.canTxQueue ||

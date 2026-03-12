@@ -73,7 +73,8 @@ static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
 static const uint8_t kClosedLoopJointStart = 4; // test joints 4~7 (bus1)
 static const uint8_t kClosedLoopJointCount = 4;
-static const uint8_t kDebugJointIndex = 5;       // stream debug info for joint-5
+static const uint8_t kDebugJointIndices[] = {5, 6, 7};
+static const uint8_t kDebugJointCount = (uint8_t)(sizeof(kDebugJointIndices) / sizeof(kDebugJointIndices[0]));
 static const uint8_t kTestActiveBusIndex = 1;   // currently only bus1
 static const uint8_t kTestActiveServoIdMin = 1; // debug range on bus1
 static const uint8_t kTestActiveServoIdMax = 4; // debug range on bus1
@@ -143,10 +144,6 @@ static bool shouldEmergencyStop(bool canBusOnline,
                                 const MappedAngleData_t& mappedData,
                                 uint8_t jointIndex)
 {
-    if (kDebugUseSineTarget) {
-        return false;
-    }
-
     if (!canBusOnline || !sensorData.isValid) {
         return true;
     }
@@ -378,31 +375,51 @@ void taskSolver(void* parameter)
             xSemaphoreGive(sharedData->targetAnglesMutex);
         }
 
-        if (kDebugUseSineTarget && kDebugJointIndex < ENCODER_TOTAL_NUM) {
-            localTargets[kDebugJointIndex] = computeSineTarget(
-                kDebugTargetMinDeg,
-                kDebugTargetMaxDeg,
-                kDebugTargetHoldMs,
-                kDebugTargetMoveMs,
-                millis());
+        if (kDebugUseSineTarget) {
+            for (uint8_t di = 0; di < kDebugJointCount; di++) {
+                uint8_t jointIndex = kDebugJointIndices[di];
+                if (jointIndex >= ENCODER_TOTAL_NUM) {
+                    continue;
+                }
+                localTargets[jointIndex] = computeSineTarget(
+                    kDebugTargetMinDeg,
+                    kDebugTargetMaxDeg,
+                    kDebugTargetHoldMs,
+                    kDebugTargetMoveMs,
+                    millis());
+            }
         }
 
         angleSolver.compute(localTargets, magAngles, absolutePosition, outPulses);
 
-        if (sharedData->jointDebugQueue &&
-            kDebugJointIndex >= kClosedLoopJointStart &&
-            kDebugJointIndex < (kClosedLoopJointStart + kClosedLoopJointCount))
+        if (sharedData->jointDebugQueue)
         {
-            JointDebugData_t debugData;
-            memset(&debugData, 0, sizeof(debugData));
-            debugData.timestamp = millis();
-            debugData.valid = (mappedData.validFlags[kDebugJointIndex] != 0) ? 1 : 0;
-            debugData.targetDeg = localTargets[kDebugJointIndex];
-            debugData.magActualDeg = magAngles[kDebugJointIndex];
-            debugData.loop1Output = angleSolver.getPidOutput(kDebugJointIndex, 0);
-            debugData.loop2Actual = (float)absolutePosition[kDebugJointIndex];
-            debugData.loop2Output = angleSolver.getPidOutput(kDebugJointIndex, 1);
-            xQueueOverwrite(sharedData->jointDebugQueue, &debugData);
+            for (uint8_t di = 0; di < kDebugJointCount; di++)
+            {
+                uint8_t jointIndex = kDebugJointIndices[di];
+                if (jointIndex < kClosedLoopJointStart ||
+                    jointIndex >= (kClosedLoopJointStart + kClosedLoopJointCount))
+                {
+                    continue;
+                }
+
+                JointDebugData_t debugData;
+                memset(&debugData, 0, sizeof(debugData));
+                debugData.jointIndex = jointIndex;
+                debugData.timestamp = millis();
+                debugData.valid = (mappedData.validFlags[jointIndex] != 0) ? 1 : 0;
+                debugData.targetDeg = localTargets[jointIndex];
+                debugData.magActualDeg = magAngles[jointIndex];
+                debugData.loop1Output = angleSolver.getPidOutput(jointIndex, 0);
+                debugData.loop2Actual = (float)absolutePosition[jointIndex];
+                debugData.loop2Output = angleSolver.getPidOutput(jointIndex, 1);
+
+                if (xQueueSend(sharedData->jointDebugQueue, &debugData, 0) != pdTRUE) {
+                    JointDebugData_t drop;
+                    xQueueReceive(sharedData->jointDebugQueue, &drop, 0);
+                    xQueueSend(sharedData->jointDebugQueue, &debugData, 0);
+                }
+            }
         }
 
         for (int i = 0; i < kClosedLoopJointCount; i++)

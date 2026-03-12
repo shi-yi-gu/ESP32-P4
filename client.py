@@ -29,6 +29,8 @@ except ImportError:
 
 TARGET_BAUDRATE = 921600
 ENCODER_COUNT = 21
+DEBUG_JOINTS = [5, 6, 7]
+PLOT_JOINT_INDEX = 5
 
 PACKET_HEADER = 0xFE
 PACKET_TAIL = 0xFF
@@ -94,7 +96,9 @@ class MachineState:
     servo_temperature: List[int] = field(default_factory=lambda: [0] * ENCODER_COUNT)
     servo_telem_online: List[bool] = field(default_factory=lambda: [False] * ENCODER_COUNT)
 
-    joint1_debug: JointDebugInfo = field(default_factory=JointDebugInfo)
+    joint_debug: List[JointDebugInfo] = field(
+        default_factory=lambda: [JointDebugInfo() for _ in range(ENCODER_COUNT)]
+    )
 
     plot_time: Deque[float] = field(default_factory=lambda: deque(maxlen=PLOT_MAX_POINTS))
     plot_target: Deque[float] = field(default_factory=lambda: deque(maxlen=PLOT_MAX_POINTS))
@@ -182,30 +186,35 @@ def process_servo_telem_packet(payload: bytes) -> None:
 
 
 def process_joint1_debug_packet(payload: bytes) -> None:
-    expected_len = 1 + 5 * 4
+    expected_len = 2 + 5 * 4
     if len(payload) != expected_len:
         return
 
-    valid, target_deg, mag_actual_deg, loop1_output, loop2_actual, loop2_output = struct.unpack(">Bfffff", payload)
+    joint_index, valid, target_deg, mag_actual_deg, loop1_output, loop2_actual, loop2_output = struct.unpack(
+        ">BBfffff", payload
+    )
 
     now = time.time()
     with state.lock:
-        state.joint1_debug.valid = valid == 1
-        state.joint1_debug.target_deg = target_deg
-        state.joint1_debug.mag_actual_deg = mag_actual_deg
-        state.joint1_debug.loop1_output = loop1_output
-        state.joint1_debug.loop2_actual = loop2_actual
-        state.joint1_debug.loop2_output = loop2_output
-        state.joint1_debug.last_update = now
+        if joint_index < ENCODER_COUNT:
+            jd = state.joint_debug[joint_index]
+            jd.valid = valid == 1
+            jd.target_deg = target_deg
+            jd.mag_actual_deg = mag_actual_deg
+            jd.loop1_output = loop1_output
+            jd.loop2_actual = loop2_actual
+            jd.loop2_output = loop2_output
+            jd.last_update = now
         state.last_update = now
 
-        if state.plot_start_time == 0.0:
-            state.plot_start_time = now
-        t = now - state.plot_start_time
-        actual_val = mag_actual_deg if valid == 1 else float("nan")
-        state.plot_time.append(t)
-        state.plot_target.append(target_deg)
-        state.plot_actual.append(actual_val)
+        if joint_index == PLOT_JOINT_INDEX:
+            if state.plot_start_time == 0.0:
+                state.plot_start_time = now
+            t = now - state.plot_start_time
+            actual_val = mag_actual_deg if valid == 1 else float("nan")
+            state.plot_time.append(t)
+            state.plot_target.append(target_deg)
+            state.plot_actual.append(actual_val)
 
 
 def parse_stream(buffer: bytearray) -> bytearray:
@@ -325,11 +334,11 @@ if HAS_PLOT:
             plt.ion()
             self.fig, self.ax = plt.subplots()
             self.fig.canvas.mpl_connect("close_event", self._on_close)
-            (self.line_target,) = self.ax.plot([], [], label="Joint5 Target")
-            (self.line_actual,) = self.ax.plot([], [], label="Joint5 Actual")
+            (self.line_target,) = self.ax.plot([], [], label=f"Joint{PLOT_JOINT_INDEX} Target")
+            (self.line_actual,) = self.ax.plot([], [], label=f"Joint{PLOT_JOINT_INDEX} Actual")
             self.ax.set_xlabel("Time (s)")
             self.ax.set_ylabel("Angle (deg)")
-            self.ax.set_title("Joint 5 Target vs Actual")
+            self.ax.set_title(f"Joint {PLOT_JOINT_INDEX} Target vs Actual")
             self.ax.grid(True)
             self.ax.legend(loc="upper right")
             plt.show(block=False)
@@ -384,15 +393,18 @@ def print_ui() -> None:
         servo_voltage = list(state.servo_voltage)
         servo_temperature = list(state.servo_temperature)
         servo_telem_online = list(state.servo_telem_online)
-        joint1_debug = JointDebugInfo(
-            valid=state.joint1_debug.valid,
-            target_deg=state.joint1_debug.target_deg,
-            mag_actual_deg=state.joint1_debug.mag_actual_deg,
-            loop1_output=state.joint1_debug.loop1_output,
-            loop2_actual=state.joint1_debug.loop2_actual,
-            loop2_output=state.joint1_debug.loop2_output,
-            last_update=state.joint1_debug.last_update,
-        )
+        joint_debug = [
+            JointDebugInfo(
+                valid=state.joint_debug[i].valid,
+                target_deg=state.joint_debug[i].target_deg,
+                mag_actual_deg=state.joint_debug[i].mag_actual_deg,
+                loop1_output=state.joint_debug[i].loop1_output,
+                loop2_actual=state.joint_debug[i].loop2_actual,
+                loop2_output=state.joint_debug[i].loop2_output,
+                last_update=state.joint_debug[i].last_update,
+            )
+            for i in range(ENCODER_COUNT)
+        ]
         calib_status = state.calib_status
         calib_timestamp = state.calib_timestamp
 
@@ -460,18 +472,21 @@ def print_ui() -> None:
 
     print("-" * 88)
 
-    debug_age_ms = (time.time() - joint1_debug.last_update) * 1000.0 if joint1_debug.last_update > 0 else 9999.0
-    debug_status = "VALID" if joint1_debug.valid else "INVALID"
-    debug_status_color = Fore.GREEN if joint1_debug.valid else Fore.RED
-
-    print(f"{Style.BRIGHT}Joint-5 Target/Actual (packet 0x04):{Style.RESET_ALL}")
-    print(f"  data_status     : {debug_status_color}{debug_status}{Style.RESET_ALL}")
-    print(f"  target_deg      : {joint1_debug.target_deg:10.4f}")
-    print(f"  actual_deg      : {joint1_debug.mag_actual_deg:10.4f}")
-    print(f"  loop1_output    : {joint1_debug.loop1_output:10.4f}")
-    print(f"  loop2_actual    : {joint1_debug.loop2_actual:10.4f}")
-    print(f"  loop2_output    : {joint1_debug.loop2_output:10.4f}")
-    print(f"  debug_latency   : {debug_age_ms:10.1f} ms")
+    print(f"{Style.BRIGHT}Debug joints (packet 0x04):{Style.RESET_ALL}")
+    for idx in DEBUG_JOINTS:
+        if idx >= ENCODER_COUNT:
+            continue
+        jd = joint_debug[idx]
+        debug_age_ms = (time.time() - jd.last_update) * 1000.0 if jd.last_update > 0 else 9999.0
+        debug_status = "VALID" if jd.valid else "INVALID"
+        debug_status_color = Fore.GREEN if jd.valid else Fore.RED
+        print(f"  joint {idx:02d} status     : {debug_status_color}{debug_status}{Style.RESET_ALL}")
+        print(f"    target_deg   : {jd.target_deg:10.4f}")
+        print(f"    actual_deg   : {jd.mag_actual_deg:10.4f}")
+        print(f"    loop1_output : {jd.loop1_output:10.4f}")
+        print(f"    loop2_actual : {jd.loop2_actual:10.4f}")
+        print(f"    loop2_output : {jd.loop2_output:10.4f}")
+        print(f"    debug_latency: {debug_age_ms:10.1f} ms")
 
     print("-" * 88)
     print("Controls: press 'c' to send calibration command, press 'q' to quit.")

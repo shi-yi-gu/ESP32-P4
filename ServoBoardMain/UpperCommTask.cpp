@@ -99,6 +99,7 @@ static void sendDataPacket(ServoStatus_t* pServo,
     else if (pJointDebug)
     {
         buffer[idx++] = PACKET_TYPE_JOINT1_DEBUG;
+        buffer[idx++] = pJointDebug->jointIndex;
         buffer[idx++] = pJointDebug->valid;
         appendFloatBigEndian(buffer, &idx, pJointDebug->targetDeg);
         appendFloatBigEndian(buffer, &idx, pJointDebug->magActualDeg);
@@ -171,7 +172,7 @@ void taskUpperComm(void* parameter)
         }
 
         JointDebugData_t jointDebugData;
-        if (xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
+        while (xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
         {
             sendDataPacket(NULL, NULL, NULL, NULL, &jointDebugData);
             sentPacket = true;

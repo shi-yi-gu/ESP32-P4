@@ -79,6 +79,7 @@ typedef struct {
     float loop2Actual;
     float loop2Output;
     uint32_t timestamp;
+    uint8_t jointIndex;
     uint8_t valid;
 } JointDebugData_t;
 
