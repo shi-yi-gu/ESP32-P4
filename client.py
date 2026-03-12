@@ -3,8 +3,9 @@ import struct
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Deque, List, Optional
 
 import serial
 import serial.tools.list_ports
@@ -39,6 +40,33 @@ PACKET_TYPE_JOINT1_DEBUG = 0x04
 CMD_CALIBRATE = b"\xCA"
 DISCONNECT_SENTINEL = 0x7FFF
 
+PLOT_MAX_POINTS = 1000
+PLOT_WINDOW_SEC = 10.0
+PLOT_ENABLED = "--no-plot" not in sys.argv
+PLOT_STATUS = "DISABLED"
+HAS_PLOT = False
+if PLOT_ENABLED:
+    try:
+        import matplotlib
+
+        try:
+            backend = matplotlib.get_backend()
+            if backend and backend.lower() == "agg":
+                matplotlib.use("TkAgg")
+        except Exception:
+            matplotlib.use("TkAgg")
+
+        import matplotlib.pyplot as plt
+
+        HAS_PLOT = True
+        PLOT_STATUS = f"ENABLED ({matplotlib.get_backend()})"
+    except Exception as exc:
+        PLOT_ENABLED = False
+        HAS_PLOT = False
+        PLOT_STATUS = f"DISABLED ({exc})"
+else:
+    PLOT_STATUS = "DISABLED (--no-plot)"
+
 
 @dataclass
 class JointDebugInfo:
@@ -60,6 +88,11 @@ class MachineState:
     servo_online: List[bool] = field(default_factory=lambda: [False] * ENCODER_COUNT)
 
     joint1_debug: JointDebugInfo = field(default_factory=JointDebugInfo)
+
+    plot_time: Deque[float] = field(default_factory=lambda: deque(maxlen=PLOT_MAX_POINTS))
+    plot_target: Deque[float] = field(default_factory=lambda: deque(maxlen=PLOT_MAX_POINTS))
+    plot_actual: Deque[float] = field(default_factory=lambda: deque(maxlen=PLOT_MAX_POINTS))
+    plot_start_time: float = 0.0
 
     calib_status: str = "IDLE"
     calib_timestamp: float = 0.0
@@ -131,6 +164,7 @@ def process_joint1_debug_packet(payload: bytes) -> None:
 
     valid, target_deg, mag_actual_deg, loop1_output, loop2_actual, loop2_output = struct.unpack(">Bfffff", payload)
 
+    now = time.time()
     with state.lock:
         state.joint1_debug.valid = valid == 1
         state.joint1_debug.target_deg = target_deg
@@ -138,8 +172,16 @@ def process_joint1_debug_packet(payload: bytes) -> None:
         state.joint1_debug.loop1_output = loop1_output
         state.joint1_debug.loop2_actual = loop2_actual
         state.joint1_debug.loop2_output = loop2_output
-        state.joint1_debug.last_update = time.time()
-        state.last_update = state.joint1_debug.last_update
+        state.joint1_debug.last_update = now
+        state.last_update = now
+
+        if state.plot_start_time == 0.0:
+            state.plot_start_time = now
+        t = now - state.plot_start_time
+        actual_val = mag_actual_deg if valid == 1 else float("nan")
+        state.plot_time.append(t)
+        state.plot_target.append(target_deg)
+        state.plot_actual.append(actual_val)
 
 
 def parse_stream(buffer: bytearray) -> bytearray:
@@ -237,6 +279,58 @@ def render_calib_status(calib_status: str, calib_timestamp: float) -> str:
     return ""
 
 
+if HAS_PLOT:
+    class JointPlotter:
+        def __init__(self) -> None:
+            plt.ion()
+            self.fig, self.ax = plt.subplots()
+            self.fig.canvas.mpl_connect("close_event", self._on_close)
+            (self.line_target,) = self.ax.plot([], [], label="Joint5 Target")
+            (self.line_actual,) = self.ax.plot([], [], label="Joint5 Actual")
+            self.ax.set_xlabel("Time (s)")
+            self.ax.set_ylabel("Angle (deg)")
+            self.ax.set_title("Joint 5 Target vs Actual")
+            self.ax.grid(True)
+            self.ax.legend(loc="upper right")
+            plt.show(block=False)
+
+        def _on_close(self, _event) -> None:
+            state.running = False
+
+        def update(self) -> None:
+            with state.lock:
+                t = list(state.plot_time)
+                y_target = list(state.plot_target)
+                y_actual = list(state.plot_actual)
+
+            if not t:
+                plt.pause(0.001)
+                return
+
+            self.line_target.set_data(t, y_target)
+            self.line_actual.set_data(t, y_actual)
+
+            t_max = t[-1]
+            t_min = max(0.0, t_max - PLOT_WINDOW_SEC)
+            self.ax.set_xlim(t_min, t_max + 0.1)
+
+            vals = [v for v in (y_target + y_actual) if v == v]
+            if vals:
+                y_min = min(vals)
+                y_max = max(vals)
+            else:
+                y_min, y_max = 0.0, 1.0
+
+            if y_min == y_max:
+                y_max = y_min + 1.0
+
+            margin = (y_max - y_min) * 0.1
+            self.ax.set_ylim(y_min - margin, y_max + margin)
+
+            self.fig.canvas.draw_idle()
+            plt.pause(0.001)
+
+
 def print_ui() -> None:
     with state.lock:
         connected_port = state.connected_port
@@ -271,7 +365,11 @@ def print_ui() -> None:
 
     latency_ms = (time.time() - last_update) * 1000.0 if last_update > 0 else 9999.0
     latency_color = Fore.GREEN if latency_ms < 100 else Fore.YELLOW if latency_ms < 500 else Fore.RED
-    print(f"Status: {port_text} | Latency: {latency_color}{latency_ms:.0f} ms{Style.RESET_ALL}")
+    plot_color = Fore.GREEN if HAS_PLOT and PLOT_ENABLED else Fore.YELLOW
+    print(
+        f"Status: {port_text} | Latency: {latency_color}{latency_ms:.0f} ms{Style.RESET_ALL}"
+        f" | Plot: {plot_color}{PLOT_STATUS}{Style.RESET_ALL}"
+    )
     print("-" * 88)
 
     print(f"{Style.BRIGHT}Mapped encoder data (count | degree):{Style.RESET_ALL}")
@@ -301,13 +399,13 @@ def print_ui() -> None:
     debug_status = "VALID" if joint1_debug.valid else "INVALID"
     debug_status_color = Fore.GREEN if joint1_debug.valid else Fore.RED
 
-    print(f"{Style.BRIGHT}Joint-1 Closed-loop Debug (packet 0x04):{Style.RESET_ALL}")
+    print(f"{Style.BRIGHT}Joint-5 Target/Actual (packet 0x04):{Style.RESET_ALL}")
     print(f"  data_status     : {debug_status_color}{debug_status}{Style.RESET_ALL}")
-    print(f"  targetDegs      : {joint1_debug.target_deg:10.4f}")
-    print(f"  magActualDegs   : {joint1_debug.mag_actual_deg:10.4f}")
-    print(f"  _pids[1][0].Out : {joint1_debug.loop1_output:10.4f}")
-    print(f"  loop2Actual     : {joint1_debug.loop2_actual:10.4f}")
-    print(f"  _pids[1][1].Out : {joint1_debug.loop2_output:10.4f}")
+    print(f"  target_deg      : {joint1_debug.target_deg:10.4f}")
+    print(f"  actual_deg      : {joint1_debug.mag_actual_deg:10.4f}")
+    print(f"  loop1_output    : {joint1_debug.loop1_output:10.4f}")
+    print(f"  loop2_actual    : {joint1_debug.loop2_actual:10.4f}")
+    print(f"  loop2_output    : {joint1_debug.loop2_output:10.4f}")
     print(f"  debug_latency   : {debug_age_ms:10.1f} ms")
 
     print("-" * 88)
@@ -381,8 +479,14 @@ def main() -> None:
     worker.start()
 
     try:
+        plotter = None
+        if PLOT_ENABLED and HAS_PLOT:
+            plotter = JointPlotter()
+
         while state.running:
             print_ui()
+            if plotter:
+                plotter.update()
             handle_keyboard_input()
             time.sleep(0.06)
     except KeyboardInterrupt:

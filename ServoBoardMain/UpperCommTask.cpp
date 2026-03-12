@@ -145,28 +145,30 @@ void taskUpperComm(void* parameter)
             }
         }
 
+        bool sentPacket = false;
         if (xQueueReceive(sharedData->mappedAngleQueue, &mappedData, 0) == pdTRUE)
         {
             sendDataPacket(NULL, &mappedData, NULL, NULL);
+            sentPacket = true;
         }
-        else
+
+        JointDebugData_t jointDebugData;
+        if (xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
         {
-            JointDebugData_t jointDebugData;
-            if (xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
+            sendDataPacket(NULL, NULL, NULL, &jointDebugData);
+            sentPacket = true;
+        }
+
+        if (!sentPacket)
+        {
+            ServoAngleData_t servoAngleData;
+            if (xQueueReceive(sharedData->servoAngleQueue, &servoAngleData, 0) == pdTRUE)
             {
-                sendDataPacket(NULL, NULL, NULL, &jointDebugData);
+                sendDataPacket(NULL, NULL, &servoAngleData, NULL);
             }
-            else
+            else if (g_calibrationUIStatus != 0)
             {
-                ServoAngleData_t servoAngleData;
-                if (xQueueReceive(sharedData->servoAngleQueue, &servoAngleData, 0) == pdTRUE)
-                {
-                    sendDataPacket(NULL, NULL, &servoAngleData, NULL);
-                }
-                else if (g_calibrationUIStatus != 0)
-                {
-                    sendDataPacket(NULL, NULL, NULL, NULL);
-                }
+                sendDataPacket(NULL, NULL, NULL, NULL);
             }
         }
 
