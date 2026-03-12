@@ -45,12 +45,13 @@ void System_Init() {
     sharedData.canRxQueue = xQueueCreate(1, sizeof(RemoteSensorData_t));
     sharedData.canTxQueue = xQueueCreate(5, sizeof(RemoteCommand_t));
     sharedData.servoAngleQueue = xQueueCreate(1, sizeof(ServoAngleData_t));
+    sharedData.servoTelemetryQueue = xQueueCreate(1, sizeof(ServoTelemetryData_t));
     sharedData.mappedAngleQueue = xQueueCreate(1, sizeof(MappedAngleData_t));
     sharedData.jointDebugQueue = xQueueCreate(1, sizeof(JointDebugData_t));
 
     if (!sharedData.cmdQueue || !sharedData.statusQueue ||
         !sharedData.canRxQueue || !sharedData.canTxQueue ||
-        !sharedData.servoAngleQueue || !sharedData.mappedAngleQueue ||
+        !sharedData.servoAngleQueue || !sharedData.servoTelemetryQueue || !sharedData.mappedAngleQueue ||
         !sharedData.jointDebugQueue) {
         while (1) {}
     }

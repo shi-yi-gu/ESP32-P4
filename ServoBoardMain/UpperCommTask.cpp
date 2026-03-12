@@ -12,6 +12,7 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_SENSOR 0x01
 #define PACKET_TYPE_CALIB_ACK 0x02
 #define PACKET_TYPE_SERVO_ANGLE 0x03
+#define PACKET_TYPE_SERVO_TELEM 0x05
 #define PACKET_TYPE_JOINT1_DEBUG 0x04
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
@@ -28,11 +29,12 @@ static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
 static void sendDataPacket(ServoStatus_t* pServo,
                            MappedAngleData_t* pMapped,
                            ServoAngleData_t* pServoAngle,
+                           ServoTelemetryData_t* pTelemetry,
                            JointDebugData_t* pJointDebug)
 {
     (void)pServo;
 
-    uint8_t buffer[128];
+    uint8_t buffer[256];
     size_t idx = 0;
 
     buffer[idx++] = PROTOCOL_HEADER;
@@ -76,6 +78,22 @@ static void sendDataPacket(ServoStatus_t* pServo,
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
             buffer[idx++] = pServoAngle->onlineStatus[i];
+        }
+    }
+    else if (pTelemetry)
+    {
+        buffer[idx++] = PACKET_TYPE_SERVO_TELEM;
+        for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
+        {
+            int16_t speed = pTelemetry->speed[i];
+            int16_t load = pTelemetry->load[i];
+            buffer[idx++] = (uint8_t)(((uint16_t)speed >> 8) & 0xFF);
+            buffer[idx++] = (uint8_t)((uint16_t)speed & 0xFF);
+            buffer[idx++] = (uint8_t)(((uint16_t)load >> 8) & 0xFF);
+            buffer[idx++] = (uint8_t)((uint16_t)load & 0xFF);
+            buffer[idx++] = pTelemetry->voltage[i];
+            buffer[idx++] = pTelemetry->temperature[i];
+            buffer[idx++] = pTelemetry->onlineStatus[i];
         }
     }
     else if (pJointDebug)
@@ -125,7 +143,7 @@ void taskUpperComm(void* parameter)
 
     Serial.println("<<<SYS_READY>>>");
 
-    for (;;)
+    for (;)
     {
         if (Serial.available())
         {
@@ -148,14 +166,21 @@ void taskUpperComm(void* parameter)
         bool sentPacket = false;
         if (xQueueReceive(sharedData->mappedAngleQueue, &mappedData, 0) == pdTRUE)
         {
-            sendDataPacket(NULL, &mappedData, NULL, NULL);
+            sendDataPacket(NULL, &mappedData, NULL, NULL, NULL);
             sentPacket = true;
         }
 
         JointDebugData_t jointDebugData;
         if (xQueueReceive(sharedData->jointDebugQueue, &jointDebugData, 0) == pdTRUE)
         {
-            sendDataPacket(NULL, NULL, NULL, &jointDebugData);
+            sendDataPacket(NULL, NULL, NULL, NULL, &jointDebugData);
+            sentPacket = true;
+        }
+
+        ServoTelemetryData_t telemetryData;
+        if (xQueueReceive(sharedData->servoTelemetryQueue, &telemetryData, 0) == pdTRUE)
+        {
+            sendDataPacket(NULL, NULL, NULL, &telemetryData, NULL);
             sentPacket = true;
         }
 
@@ -164,15 +189,14 @@ void taskUpperComm(void* parameter)
             ServoAngleData_t servoAngleData;
             if (xQueueReceive(sharedData->servoAngleQueue, &servoAngleData, 0) == pdTRUE)
             {
-                sendDataPacket(NULL, NULL, &servoAngleData, NULL);
+                sendDataPacket(NULL, NULL, &servoAngleData, NULL, NULL);
             }
             else if (g_calibrationUIStatus != 0)
             {
-                sendDataPacket(NULL, NULL, NULL, NULL);
+                sendDataPacket(NULL, NULL, NULL, NULL, NULL);
             }
         }
 
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
-

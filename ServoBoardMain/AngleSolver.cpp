@@ -272,8 +272,11 @@ void taskSolver(void* parameter)
 #endif
 
         ServoAngleData_t servoData;
+        ServoTelemetryData_t telemetryData;
         memset(&servoData, 0, sizeof(servoData));
         servoData.timestamp = millis();
+        memset(&telemetryData, 0, sizeof(telemetryData));
+        telemetryData.timestamp = servoData.timestamp;
 
         for (int i = 0; i < kClosedLoopJointCount; i++)
         {
@@ -299,6 +302,30 @@ void taskSolver(void* parameter)
             }
         }
         xQueueOverwrite(sharedData->servoAngleQueue, &servoData);
+
+        for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
+        {
+            uint8_t bus = jointMap[i].busIndex;
+            uint8_t id = jointMap[i].servoID;
+            ServoBusManager* pBus = getBusByIndex(bus);
+            if (pBus && pBus->isOnline(id)) {
+                const ServoFeedback& fb = pBus->getFeedback(id);
+                telemetryData.speed[i] = fb.speed;
+                telemetryData.load[i] = fb.load;
+                telemetryData.voltage[i] = fb.voltage;
+                telemetryData.temperature[i] = fb.temperature;
+                telemetryData.onlineStatus[i] = 1;
+            } else {
+                telemetryData.speed[i] = 0;
+                telemetryData.load[i] = 0;
+                telemetryData.voltage[i] = 0;
+                telemetryData.temperature[i] = 0;
+                telemetryData.onlineStatus[i] = 0;
+            }
+        }
+        if (sharedData->servoTelemetryQueue) {
+            xQueueOverwrite(sharedData->servoTelemetryQueue, &telemetryData);
+        }
 
         bool canBusOnline = false;
         if (xQueuePeek(sharedData->canRxQueue, &sensorData, 0) == pdTRUE && sensorData.isValid) {

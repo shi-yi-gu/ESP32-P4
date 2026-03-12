@@ -64,6 +64,15 @@ typedef struct {
 } ServoAngleData_t;
 
 typedef struct {
+    int16_t speed[ENCODER_TOTAL_NUM];
+    int16_t load[ENCODER_TOTAL_NUM];
+    uint8_t voltage[ENCODER_TOTAL_NUM];
+    uint8_t temperature[ENCODER_TOTAL_NUM];
+    uint8_t onlineStatus[ENCODER_TOTAL_NUM];
+    uint32_t timestamp;
+} ServoTelemetryData_t;
+
+typedef struct {
     float targetDeg;
     float magActualDeg;
     float loop1Output;
@@ -80,6 +89,7 @@ typedef struct {
     QueueHandle_t canTxQueue;
     QueueHandle_t canRxQueue;
     QueueHandle_t servoAngleQueue;
+    QueueHandle_t servoTelemetryQueue;
     QueueHandle_t mappedAngleQueue;
     QueueHandle_t jointDebugQueue;
 
