@@ -17,6 +17,7 @@ extern ServoBusManager servoBus3;
 extern AngleSolver angleSolver;
 extern JointMapItem jointMap[ENCODER_TOTAL_NUM];
 
+// 构造：清零零位/比例/方向与PID状态
 AngleSolver::AngleSolver() : _initialized(false)
 {
     memset(_zeroOffsets, 0, sizeof(_zeroOffsets));
@@ -25,6 +26,7 @@ AngleSolver::AngleSolver() : _initialized(false)
     memset(_pids, 0, sizeof(_pids));
 }
 
+// 初始化关节零位、减速比与方向
 void AngleSolver::init(int16_t* zeroOffsets, float* gearRatios, int8_t* directions)
 {
     for (int i = 0; i < JOINT_COUNT; i++)
@@ -36,6 +38,7 @@ void AngleSolver::init(int16_t* zeroOffsets, float* gearRatios, int8_t* directio
     _initialized = true;
 }
 
+// 初始化双环PID参数（外环角度、内环位置）
 void AngleSolver::setPIDParams(float pidParams[][PID_PARAMETER_NUM])
 {
     for (int i = 0; i < JOINT_COUNT; i++)
@@ -45,22 +48,27 @@ void AngleSolver::setPIDParams(float pidParams[][PID_PARAMETER_NUM])
     }
 }
 
+// 计算双环PID并输出舵机脉冲
 bool AngleSolver::compute(float* targetDegs, float* magActualDegs,
                           const int32_t* absolutePosition, int16_t* outServoPulses)
 {
     for (int i = 0; i < JOINT_COUNT; i++)
     {
+        // 外环：角度环计算
         f_PID_Calculate(&_pids[i][0], targetDegs[i], magActualDegs[i]);
 
+        // 内环：外环输出 + 当前位置作为目标
         float loop2Target = _pids[i][0].Output + (float)absolutePosition[i];
         float loop2Actual = (float)absolutePosition[i];
         f_PID_Calculate(&_pids[i][1], loop2Target, loop2Actual);
 
+        // 合成舵机脉冲输出（内环输出叠加绝对位置）
         outServoPulses[i] = (int16_t)_pids[i][1].Output+absolutePosition[i];
     }
     return true;
 }
 
+// 获取指定关节/环路的PID输出
 float AngleSolver::getPidOutput(uint8_t jointIndex, uint8_t loopIndex) const
 {
     if (jointIndex >= JOINT_COUNT || loopIndex > 1) {
@@ -69,24 +77,24 @@ float AngleSolver::getPidOutput(uint8_t jointIndex, uint8_t loopIndex) const
     return _pids[jointIndex][loopIndex].Output;
 }
 
+// 编码器计数与调试参数
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
-static const uint8_t kClosedLoopJointStart = 4; // test joints 4~7 (bus1)
+static const uint8_t kClosedLoopJointStart = 4; // 测试关节 4~7（bus1）
 static const uint8_t kClosedLoopJointCount = 4;
 static const uint8_t kDebugJointIndices[] = {5, 6, 7};
 static const uint8_t kDebugJointCount = (uint8_t)(sizeof(kDebugJointIndices) / sizeof(kDebugJointIndices[0]));
-static const uint8_t kTestActiveBusIndex = 1;   // currently only bus1
-static const uint8_t kTestActiveServoIdMin = 1; // debug range on bus1
-static const uint8_t kTestActiveServoIdMax = 4; // debug range on bus1
+static const uint8_t kTestActiveBusIndex = 1;   // 当前仅 bus1
+static const uint8_t kTestActiveServoIdMin = 1; // bus1 调试 ID 范围
+static const uint8_t kTestActiveServoIdMax = 4; // bus1 调试 ID 范围
 static const float kDebugTargetMinDeg = 3.f;
 static const float kDebugTargetMaxDeg = 30.0f;
 static const uint32_t kDebugTargetHoldMs = 2500;
 static const uint32_t kDebugTargetMoveMs = 5000;
 static const bool kDebugUseSineTarget = true;
-static const uint32_t kCanBusOfflineTimeoutMs = 300; // bus-level offline threshold (debounced for jitter)
+static const uint32_t kCanBusOfflineTimeoutMs = 300; // CAN 离线阈值（去抖）
 
-// 0x7FFF is reserved by upper protocol as "DISCONNECT" sentinel.
-// Clamp valid mapped counts away from this value to avoid false disconnect display.
+// 0x7FFF 被上位机协议保留为“断连”标记，避免映射值冲突
 static int16_t clampMappedCountForProtocol(int32_t value)
 {
     if (value > 32766) return 32766;
@@ -94,6 +102,7 @@ static int16_t clampMappedCountForProtocol(int32_t value)
     return (int16_t)value;
 }
 
+// 按方向统一编码器朝向（保持计数递增方向一致）
 static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction)
 {
     int32_t oriented = (int32_t)rawValue & (kEncoderModulo - 1);
@@ -103,6 +112,7 @@ static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction)
     return oriented;
 }
 
+// 多圈展开：将单圈原始值转换为连续计数
 static int32_t unwrapEncoderToContinuous(uint8_t jointIndex,
                                          int32_t orientedRaw,
                                          int32_t* prevOrientedRaw,
@@ -125,6 +135,7 @@ static int32_t unwrapEncoderToContinuous(uint8_t jointIndex,
     return continuousRaw[jointIndex];
 }
 
+// 获取编码器零偏：优先自动校准，其次手动校准
 static int32_t getEncoderOffset(uint8_t jointIndex)
 {
     if (jointIndex >= ENCODER_TOTAL_NUM) return 0;
@@ -134,11 +145,13 @@ static int32_t getEncoderOffset(uint8_t jointIndex)
     return g_encoderOffsetManual[jointIndex];
 }
 
+// 编码器计数转角度
 static float convertEncoderCountToDeg(int32_t encoderCount)
 {
     return (float)encoderCount * 360.0f / (float)kEncoderModulo;
 }
 
+// 急停判定：总线/传感器/单关节任一异常即停
 static bool shouldEmergencyStop(bool canBusOnline,
                                 const RemoteSensorData_t& sensorData,
                                 const MappedAngleData_t& mappedData,
@@ -163,6 +176,7 @@ static bool shouldEmergencyStop(bool canBusOnline,
     return false;
 }
 
+// 生成调试用正弦目标（含最大/最小值保持）
 static float computeSineTarget(float minDeg,
                                float maxDeg,
                                uint32_t holdMs,
@@ -207,6 +221,7 @@ static float computeSineTarget(float minDeg,
     return maxDeg - range * w;
 }
 
+// 根据索引获取舵机总线对象
 static ServoBusManager* getBusByIndex(uint8_t busIndex)
 {
     switch (busIndex)
@@ -248,6 +263,7 @@ void taskSolver(void* parameter)
 
     while (1)
     {
+        // 同步读取舵机位置（调试总线）
         bool busWritePending[NUM_BUSES] = {false};
         ServoBusManager* testBus = getBusByIndex(kTestActiveBusIndex);
         int testBusSuccessCount = testBus ? testBus->syncReadPositions(testBusIds, testBusCount) : 0;
@@ -268,6 +284,7 @@ void taskSolver(void* parameter)
         }
 #endif
 
+        // 采集舵机角度与在线状态
         ServoAngleData_t servoData;
         ServoTelemetryData_t telemetryData;
         memset(&servoData, 0, sizeof(servoData));
@@ -275,6 +292,7 @@ void taskSolver(void* parameter)
         memset(&telemetryData, 0, sizeof(telemetryData));
         telemetryData.timestamp = servoData.timestamp;
 
+        // 采集闭环舵机位置（绝对位置）
         for (int i = 0; i < kClosedLoopJointCount; i++)
         {
             uint8_t jointIndex = kClosedLoopJointStart + i;
@@ -300,6 +318,7 @@ void taskSolver(void* parameter)
         }
         xQueueOverwrite(sharedData->servoAngleQueue, &servoData);
 
+        // 采集舵机速度/负载/电压/温度
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
             uint8_t bus = jointMap[i].busIndex;
@@ -324,6 +343,7 @@ void taskSolver(void* parameter)
             xQueueOverwrite(sharedData->servoTelemetryQueue, &telemetryData);
         }
 
+        // 判断 CAN 总线在线（基于时间戳）
         bool canBusOnline = false;
         if (xQueuePeek(sharedData->canRxQueue, &sensorData, 0) == pdTRUE && sensorData.isValid) {
             const uint32_t nowMs = millis();
@@ -336,7 +356,7 @@ void taskSolver(void* parameter)
 
         if (canBusOnline)
         {
-            // Gate on CAN bus availability and per-encoder validity flags.
+            // CAN 在线：按编码器有效标志映射角度
             for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
             {
                 if (sensorData.errorFlags[i] != 0) {
@@ -360,7 +380,7 @@ void taskSolver(void* parameter)
         }
         else
         {
-            // Bus offline: mark all joints invalid and reset unwrapping state.
+            // CAN 离线：标记无效并重置多圈展开状态
             for (int i = 0; i < ENCODER_TOTAL_NUM; i++) {
                 mappedData.validFlags[i] = 0;
                 unwrapInitialized[i] = false;
@@ -369,12 +389,14 @@ void taskSolver(void* parameter)
 
         xQueueOverwrite(sharedData->mappedAngleQueue, &mappedData);
 
+        // 读取目标角度（上位机/控制器）
         if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
             memcpy(localTargets, sharedData->targetAngles, sizeof(localTargets));
             xSemaphoreGive(sharedData->targetAnglesMutex);
         }
 
+        // 调试：生成正弦目标
         if (kDebugUseSineTarget) {
             for (uint8_t di = 0; di < kDebugJointCount; di++) {
                 uint8_t jointIndex = kDebugJointIndices[di];
@@ -390,8 +412,10 @@ void taskSolver(void* parameter)
             }
         }
 
+        // 双环 PID 计算
         angleSolver.compute(localTargets, magAngles, absolutePosition, outPulses);
 
+        // 调试数据上报
         if (sharedData->jointDebugQueue)
         {
             for (uint8_t di = 0; di < kDebugJointCount; di++)
@@ -422,6 +446,7 @@ void taskSolver(void* parameter)
             }
         }
 
+        // 发送舵机目标（含急停）
         for (int i = 0; i < kClosedLoopJointCount; i++)
         {
             uint8_t jointIndex = kClosedLoopJointStart + i;
@@ -440,8 +465,9 @@ void taskSolver(void* parameter)
                 continue;
             }
 
-            if (kDebugUseSineTarget) {
-                // Test stage: send to active bus IDs for debug.
+            // 调试：生成正弦目标
+        if (kDebugUseSineTarget) {
+                // 调试：仅对指定 bus/id 下发
                 if (pBus &&
                     bus == kTestActiveBusIndex &&
                     id >= kTestActiveServoIdMin &&
@@ -462,6 +488,7 @@ void taskSolver(void* parameter)
             }
         }
 
+        // 触发总线写入（如启用同步写）
         for (uint8_t bus = 0; bus < NUM_BUSES; bus++)
         {
             if (busWritePending[bus]) {

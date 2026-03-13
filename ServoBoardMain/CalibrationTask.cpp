@@ -33,7 +33,7 @@ int32_t g_encoderOffsetManual[ENCODER_TOTAL_NUM] = {0};
 static const uint8_t kTestJointCount = ENCODER_TOTAL_NUM;
 static const int32_t kManualEncoderMax[kTestJointCount] = {
     0, 0, 0, 0,
-    0, 0, 0, 0,
+    0, 18446, 17234, 14261,
     0, 0, 0, 0,
     0, 0, 0, 0,
     0, 0, 0, 0, 0
