@@ -467,7 +467,7 @@ void taskSolver(void* parameter)
             if (busWritePending[bus]) {
                 ServoBusManager* pBus = getBusByIndex(bus);
                 if (pBus) {
-                    pBus->syncWriteAll();
+                    // pBus->syncWriteAll();
                 }
             }
         }

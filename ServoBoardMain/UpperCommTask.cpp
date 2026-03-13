@@ -144,7 +144,7 @@ void taskUpperComm(void* parameter)
 
     Serial.println("<<<SYS_READY>>>");
 
-    for (;)
+    for (;;)
     {
         if (Serial.available())
         {
