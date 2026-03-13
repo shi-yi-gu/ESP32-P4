@@ -112,27 +112,12 @@ static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction)
     return oriented;
 }
 
-// 多圈展开：将单圈原始值转换为连续计数
-static int32_t unwrapEncoderToContinuous(uint8_t jointIndex,
-                                         int32_t orientedRaw,
-                                         int32_t* prevOrientedRaw,
-                                         int32_t* continuousRaw,
-                                         bool* initialized)
+// Wrap encoder delta to +/- half turn to keep startup consistent.
+static int32_t wrapEncoderDelta(int32_t delta)
 {
-    if (!initialized[jointIndex]) {
-        initialized[jointIndex] = true;
-        prevOrientedRaw[jointIndex] = orientedRaw;
-        continuousRaw[jointIndex] = orientedRaw;
-        return continuousRaw[jointIndex];
-    }
-
-    int32_t delta = orientedRaw - prevOrientedRaw[jointIndex];
-    if (delta > kEncoderHalfTurn) delta -= kEncoderModulo;
-    if (delta < -kEncoderHalfTurn) delta += kEncoderModulo;
-
-    prevOrientedRaw[jointIndex] = orientedRaw;
-    continuousRaw[jointIndex] += delta;
-    return continuousRaw[jointIndex];
+    while (delta > kEncoderHalfTurn) delta -= kEncoderModulo;
+    while (delta < -kEncoderHalfTurn) delta += kEncoderModulo;
+    return delta;
 }
 
 // 获取编码器零偏：优先自动校准，其次手动校准
@@ -253,9 +238,6 @@ void taskSolver(void* parameter)
 
     RemoteSensorData_t sensorData;
     MappedAngleData_t mappedData;
-    int32_t prevOrientedRaw[ENCODER_TOTAL_NUM] = {0};
-    int32_t continuousRaw[ENCODER_TOTAL_NUM] = {0};
-    bool unwrapInitialized[ENCODER_TOTAL_NUM] = {false};
 
 #if SOLVER_DIAG_LOG_ENABLE
     uint32_t lastDiagLogMs = 0;
@@ -361,17 +343,12 @@ void taskSolver(void* parameter)
             {
                 if (sensorData.errorFlags[i] != 0) {
                     mappedData.validFlags[i] = 0;
-                    unwrapInitialized[i] = false;
                     magAngles[i] = 0.0f;
                     continue;
                 }
                 const int32_t orientedRaw = orientEncoderRaw(sensorData.encoderValues[i], g_encoderDirection[i]);
-                const int32_t continuous = unwrapEncoderToContinuous((uint8_t)i,
-                                                                     orientedRaw,
-                                                                     prevOrientedRaw,
-                                                                     continuousRaw,
-                                                                     unwrapInitialized);
-                const int32_t mappedCount = continuous - getEncoderOffset((uint8_t)i);
+                const int32_t offset = getEncoderOffset((uint8_t)i);
+                const int32_t mappedCount = wrapEncoderDelta(orientedRaw - offset);
 
                 mappedData.angleValues[i] = clampMappedCountForProtocol(mappedCount);
                 mappedData.validFlags[i] = 1;
@@ -380,10 +357,9 @@ void taskSolver(void* parameter)
         }
         else
         {
-            // CAN 离线：标记无效并重置多圈展开状态
+            // CAN offline: mark invalid.
             for (int i = 0; i < ENCODER_TOTAL_NUM; i++) {
                 mappedData.validFlags[i] = 0;
-                unwrapInitialized[i] = false;
             }
         }
 

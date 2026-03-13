@@ -28,17 +28,38 @@ static const JointCalibrationConfig kJoint0Calib = {
 };
 
 static const JointCalibrationConfig kJoint1Calib = {
-    degToEnc(85.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(40.0f),
+    degToEnc(105.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(40.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint2Calib = {
-    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint3Calib = {
-    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
+    degToEnc(120.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
+    180, 10, 150, 10, 20, 5000
+};
+// Joint 0~3: dedicated entries for real hardware tuning.
+// You can manually update these four blocks with measured values.
+static const JointCalibrationConfig kJoint4Calib = {
+    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint5Calib = {
+    degToEnc(105.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(40.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint6Calib = {
+    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint7Calib = {
+    degToEnc(120.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
     180, 10, 150, 10, 20, 5000
 };
 
@@ -48,12 +69,12 @@ const JointCalibrationConfig kJointCalibrationProfile[ENCODER_TOTAL_NUM] = {
     kJoint1Calib,       // 1
     kJoint2Calib,       // 2
     kJoint3Calib,       // 3
-    kDefaultJointCalib, // 4
-    kDefaultJointCalib, // 5
-    kDefaultJointCalib, // 6
+    kJoint4Calib, // 4
+    kJoint5Calib, // 5
+    kJoint6Calib, // 6
 
     // joint 7 ~ joint 13
-    kDefaultJointCalib, // 7
+    kJoint7Calib, // 7
     kDefaultJointCalib, // 8
     kDefaultJointCalib, // 9
     kDefaultJointCalib, // 10

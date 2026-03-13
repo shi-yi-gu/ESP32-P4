@@ -473,20 +473,51 @@ def print_ui() -> None:
     print("-" * 88)
 
     print(f"{Style.BRIGHT}Debug joints (packet 0x04):{Style.RESET_ALL}")
-    for idx in DEBUG_JOINTS:
-        if idx >= ENCODER_COUNT:
-            continue
-        jd = joint_debug[idx]
-        debug_age_ms = (time.time() - jd.last_update) * 1000.0 if jd.last_update > 0 else 9999.0
-        debug_status = "VALID" if jd.valid else "INVALID"
-        debug_status_color = Fore.GREEN if jd.valid else Fore.RED
-        print(f"  joint {idx:02d} status     : {debug_status_color}{debug_status}{Style.RESET_ALL}")
-        print(f"    target_deg   : {jd.target_deg:10.4f}")
-        print(f"    actual_deg   : {jd.mag_actual_deg:10.4f}")
-        print(f"    loop1_output : {jd.loop1_output:10.4f}")
-        print(f"    loop2_actual : {jd.loop2_actual:10.4f}")
-        print(f"    loop2_output : {jd.loop2_output:10.4f}")
-        print(f"    debug_latency: {debug_age_ms:10.1f} ms")
+    debug_indices = [idx for idx in DEBUG_JOINTS if idx < ENCODER_COUNT]
+    if not debug_indices:
+        print("  (no debug joints configured)")
+    else:
+        label_width = 14
+        col_width = 18
+
+        def color_pad(text: str, color: str) -> str:
+            padded = f"{text:<{col_width}}"
+            if color:
+                return f"{color}{padded}{Style.RESET_ALL}"
+            return padded
+
+        header_cells = [color_pad(f"joint {idx:02d}", Style.BRIGHT) for idx in debug_indices]
+        print(f"{'':<{label_width}} " + "  ".join(header_cells))
+
+        status_cells = []
+        target_cells = []
+        actual_cells = []
+        loop1_cells = []
+        loop2a_cells = []
+        loop2o_cells = []
+        latency_cells = []
+
+        for idx in debug_indices:
+            jd = joint_debug[idx]
+            debug_age_ms = (time.time() - jd.last_update) * 1000.0 if jd.last_update > 0 else 9999.0
+            debug_status = "VALID" if jd.valid else "INVALID"
+            debug_status_color = Fore.GREEN if jd.valid else Fore.RED
+
+            status_cells.append(color_pad(f"{debug_status:<7}", debug_status_color))
+            target_cells.append(color_pad(f"{jd.target_deg:10.4f}", ""))
+            actual_cells.append(color_pad(f"{jd.mag_actual_deg:10.4f}", ""))
+            loop1_cells.append(color_pad(f"{jd.loop1_output:10.4f}", ""))
+            loop2a_cells.append(color_pad(f"{jd.loop2_actual:10.4f}", ""))
+            loop2o_cells.append(color_pad(f"{jd.loop2_output:10.4f}", ""))
+            latency_cells.append(color_pad(f"{debug_age_ms:9.1f} ms", ""))
+
+        print(f"{'status':<{label_width}} " + "  ".join(status_cells))
+        print(f"{'target_deg':<{label_width}} " + "  ".join(target_cells))
+        print(f"{'actual_deg':<{label_width}} " + "  ".join(actual_cells))
+        print(f"{'loop1_output':<{label_width}} " + "  ".join(loop1_cells))
+        print(f"{'loop2_actual':<{label_width}} " + "  ".join(loop2a_cells))
+        print(f"{'loop2_output':<{label_width}} " + "  ".join(loop2o_cells))
+        print(f"{'debug_latency':<{label_width}} " + "  ".join(latency_cells))
 
     print("-" * 88)
     print("Controls: press 'c' to send calibration command, press 'q' to quit.")
