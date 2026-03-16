@@ -80,6 +80,8 @@ float AngleSolver::getPidOutput(uint8_t jointIndex, uint8_t loopIndex) const
 // 编码器计数与调试参数
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
+// 10 degrees in encoder counts (rounded).
+static const int32_t kEncoderMarginCounts = (kEncoderModulo * 10 + 180) / 360;
 static const uint8_t kClosedLoopJointStart = 4; // 测试关节 4~7（bus1）
 static const uint8_t kClosedLoopJointCount = 4;
 static const uint8_t kDebugJointIndices[] = {5, 6, 7};
@@ -147,6 +149,10 @@ static bool shouldEmergencyStop(bool canBusOnline,
     }
 
     if (jointIndex >= ENCODER_TOTAL_NUM) {
+        return true;
+    }
+
+    if (!g_jointCalibResult[jointIndex].success) {
         return true;
     }
 
@@ -347,8 +353,19 @@ void taskSolver(void* parameter)
                     continue;
                 }
                 const int32_t orientedRaw = orientEncoderRaw(sensorData.encoderValues[i], g_encoderDirection[i]);
-                const int32_t offset = getEncoderOffset((uint8_t)i);
-                const int32_t mappedCount = wrapEncoderDelta(orientedRaw - offset);
+                int32_t mappedCount = orientedRaw;
+                if (g_jointCalibResult[i].success) {
+                    const int32_t offset = getEncoderOffset((uint8_t)i);
+                    const int32_t angleScope = g_jointCalibConfig[i].angleScope;
+                    const int32_t bottomReserved = g_jointCalibConfig[i].bottomReserved;
+                    int32_t delta = orientedRaw - offset + bottomReserved;
+                    delta %= kEncoderModulo;
+                    if (delta < 0) delta += kEncoderModulo;
+                    if (delta > angleScope + kEncoderMarginCounts) {
+                        delta -= kEncoderModulo;
+                    }
+                    mappedCount = delta - bottomReserved;
+                }
 
                 mappedData.angleValues[i] = clampMappedCountForProtocol(mappedCount);
                 mappedData.validFlags[i] = 1;

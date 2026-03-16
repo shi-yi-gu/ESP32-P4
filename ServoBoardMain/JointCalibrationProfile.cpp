@@ -23,7 +23,7 @@ static const JointCalibrationConfig kDefaultJointCalib = {
 // Joint 0~3: dedicated entries for real hardware tuning.
 // You can manually update these four blocks with measured values.
 static const JointCalibrationConfig kJoint0Calib = {
-    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
@@ -38,13 +38,13 @@ static const JointCalibrationConfig kJoint2Calib = {
 };
 
 static const JointCalibrationConfig kJoint3Calib = {
-    degToEnc(120.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
+    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
     180, 10, 150, 10, 20, 5000
 };
-// Joint 0~3: dedicated entries for real hardware tuning.
+// Joint 4~7: dedicated entries for real hardware tuning.
 // You can manually update these four blocks with measured values.
 static const JointCalibrationConfig kJoint4Calib = {
-    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
@@ -59,7 +59,7 @@ static const JointCalibrationConfig kJoint6Calib = {
 };
 
 static const JointCalibrationConfig kJoint7Calib = {
-    degToEnc(120.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
+    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
     180, 10, 150, 10, 20, 5000
 };
 

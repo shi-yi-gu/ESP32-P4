@@ -33,7 +33,7 @@ int32_t g_encoderOffsetManual[ENCODER_TOTAL_NUM] = {0};
 static const uint8_t kTestJointCount = ENCODER_TOTAL_NUM;
 static const int32_t kManualEncoderMax[kTestJointCount] = {
     0, 0, 0, 0,
-    0, 2096, 0, 0,
+    11443, 10454, 7865, 1830,
     0, 0, 0, 0,
     0, 0, 0, 0,
     0, 0, 0, 0, 0
@@ -148,7 +148,8 @@ void initManualCalibrationForTest(void) {
         out.encoderMax = kManualEncoderMax[i];
         out.offset = out.encoderMax - cfg.angleScope + cfg.bottomReserved;
         out.angleMax = cfg.angleScope - cfg.bottomReserved - cfg.topReserved;
-        out.success = true;
+        // encoderMax == 0 means manual calibration not provided.
+        out.success = (out.encoderMax != 0);
 
         // Keep fallback offset aligned for debug convenience.
         g_encoderOffsetManual[i] = out.offset;
