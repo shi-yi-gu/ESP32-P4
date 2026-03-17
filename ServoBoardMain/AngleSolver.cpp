@@ -84,19 +84,21 @@ static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
 static const int32_t kEncoderMarginCounts = (kEncoderModulo * 10 + 180) / 360;
 static const uint8_t kClosedLoopJointStart = 4; // 测试关节 4~7（bus1）
 static const uint8_t kClosedLoopJointCount = 4;
-static const uint8_t kDebugJointIndices[] = {5, 6, 7};
+static const uint8_t kDebugJointIndices[] = {4, 5, 6, 7};
 static const uint8_t kDebugJointCount = (uint8_t)(sizeof(kDebugJointIndices) / sizeof(kDebugJointIndices[0]));
 static const uint8_t kTestActiveBusIndex = 1;   // 当前仅 bus1
 static const uint8_t kTestActiveServoIdMin = 1; // bus1 调试 ID 范围
 static const uint8_t kTestActiveServoIdMax = 4; // bus1 调试 ID 范围
-static const float kDebugTargetMinDeg = 3.f;
-static const float kDebugTargetMaxDeg = 30.0f;
+static const float kDebugTargetMinDeg = 40.f;
+static const float kDebugTargetMaxDeg = 80.0f;
 static const uint32_t kDebugTargetHoldMs = 2500;
 static const uint32_t kDebugTargetMoveMs = 5000;
 static const bool kDebugUseSineTarget = true;
 static const uint32_t kCanBusOfflineTimeoutMs = 300; // CAN 离线阈值（去抖）
 
 // 0x7FFF 被上位机协议保留为“断连”标记，避免映射值冲突
+#define kDebugUseTestTargets kDebugUseSineTarget
+
 static int16_t clampMappedCountForProtocol(int32_t value)
 {
     if (value > 32766) return 32766;
@@ -168,6 +170,11 @@ static bool shouldEmergencyStop(bool canBusOnline,
 }
 
 // 生成调试用正弦目标（含最大/最小值保持）
+#define DEBUG_TARGET_VALUE(jointIndex, minDeg, maxDeg, holdMs, moveMs, nowMs) \
+    (((jointIndex) == 4) ? computeSineTarget((minDeg), (maxDeg), (holdMs), (moveMs), (nowMs)) : \
+     (((jointIndex) == 5 || (jointIndex) == 6 || (jointIndex) == 7) ? 20.0f : \
+      computeSineTarget((minDeg), (maxDeg), (holdMs), (moveMs), (nowMs))))
+
 static float computeSineTarget(float minDeg,
                                float maxDeg,
                                uint32_t holdMs,
@@ -390,13 +397,13 @@ void taskSolver(void* parameter)
         }
 
         // 调试：生成正弦目标
-        if (kDebugUseSineTarget) {
+        if (kDebugUseTestTargets) {
             for (uint8_t di = 0; di < kDebugJointCount; di++) {
                 uint8_t jointIndex = kDebugJointIndices[di];
                 if (jointIndex >= ENCODER_TOTAL_NUM) {
                     continue;
                 }
-                localTargets[jointIndex] = computeSineTarget(
+                localTargets[jointIndex] = DEBUG_TARGET_VALUE(jointIndex,
                     kDebugTargetMinDeg,
                     kDebugTargetMaxDeg,
                     kDebugTargetHoldMs,
@@ -459,7 +466,7 @@ void taskSolver(void* parameter)
             }
 
             // 调试：生成正弦目标
-        if (kDebugUseSineTarget) {
+        if (kDebugUseTestTargets) {
                 // 调试：仅对指定 bus/id 下发
                 if (pBus &&
                     bus == kTestActiveBusIndex &&
@@ -487,7 +494,7 @@ void taskSolver(void* parameter)
             if (busWritePending[bus]) {
                 ServoBusManager* pBus = getBusByIndex(bus);
                 if (pBus) {
-                    // pBus->syncWriteAll();
+                     pBus->syncWriteAll();
                 }
             }
         }
