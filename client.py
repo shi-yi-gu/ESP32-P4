@@ -5,7 +5,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, List, Optional
+from typing import Deque, Dict, List, Optional
 
 import serial
 import serial.tools.list_ports
@@ -29,8 +29,8 @@ except ImportError:
 
 TARGET_BAUDRATE = 921600
 ENCODER_COUNT = 21
-DEBUG_JOINTS = [5, 6, 7]
-PLOT_JOINT_INDEX = 5
+DEBUG_JOINTS = [4, 5, 6, 7]
+PLOT_JOINTS = [4, 5, 6, 7]
 
 PACKET_HEADER = 0xFE
 PACKET_TAIL = 0xFF
@@ -70,6 +70,17 @@ if PLOT_ENABLED:
 else:
     PLOT_STATUS = "DISABLED (--no-plot)"
 
+def _plot_joint_indices() -> List[int]:
+    return [idx for idx in PLOT_JOINTS if 0 <= idx < ENCODER_COUNT]
+
+
+def _make_plot_buffers() -> Dict[int, Deque[float]]:
+    return {idx: deque(maxlen=PLOT_MAX_POINTS) for idx in _plot_joint_indices()}
+
+
+def _make_plot_start_times() -> Dict[int, float]:
+    return {idx: 0.0 for idx in _plot_joint_indices()}
+
 
 @dataclass
 class JointDebugInfo:
@@ -100,10 +111,10 @@ class MachineState:
         default_factory=lambda: [JointDebugInfo() for _ in range(ENCODER_COUNT)]
     )
 
-    plot_time: Deque[float] = field(default_factory=lambda: deque(maxlen=PLOT_MAX_POINTS))
-    plot_target: Deque[float] = field(default_factory=lambda: deque(maxlen=PLOT_MAX_POINTS))
-    plot_actual: Deque[float] = field(default_factory=lambda: deque(maxlen=PLOT_MAX_POINTS))
-    plot_start_time: float = 0.0
+    plot_time: Dict[int, Deque[float]] = field(default_factory=_make_plot_buffers)
+    plot_target: Dict[int, Deque[float]] = field(default_factory=_make_plot_buffers)
+    plot_actual: Dict[int, Deque[float]] = field(default_factory=_make_plot_buffers)
+    plot_start_time: Dict[int, float] = field(default_factory=_make_plot_start_times)
 
     calib_status: str = "IDLE"
     calib_timestamp: float = 0.0
@@ -207,14 +218,14 @@ def process_joint1_debug_packet(payload: bytes) -> None:
             jd.last_update = now
         state.last_update = now
 
-        if joint_index == PLOT_JOINT_INDEX:
-            if state.plot_start_time == 0.0:
-                state.plot_start_time = now
-            t = now - state.plot_start_time
+        if joint_index in state.plot_time:
+            if state.plot_start_time.get(joint_index, 0.0) == 0.0:
+                state.plot_start_time[joint_index] = now
+            t = now - state.plot_start_time[joint_index]
             actual_val = mag_actual_deg if valid == 1 else float("nan")
-            state.plot_time.append(t)
-            state.plot_target.append(target_deg)
-            state.plot_actual.append(actual_val)
+            state.plot_time[joint_index].append(t)
+            state.plot_target[joint_index].append(target_deg)
+            state.plot_actual[joint_index].append(actual_val)
 
 
 def parse_stream(buffer: bytearray) -> bytearray:
@@ -334,13 +345,27 @@ if HAS_PLOT:
             plt.ion()
             self.fig, self.ax = plt.subplots()
             self.fig.canvas.mpl_connect("close_event", self._on_close)
-            (self.line_target,) = self.ax.plot([], [], label=f"Joint{PLOT_JOINT_INDEX} Target")
-            (self.line_actual,) = self.ax.plot([], [], label=f"Joint{PLOT_JOINT_INDEX} Actual")
+            self.plot_joints = _plot_joint_indices()
+            self.lines = {}
+            colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+            for idx, joint in enumerate(self.plot_joints):
+                color = colors[idx % len(colors)] if colors else None
+                (line_target,) = self.ax.plot(
+                    [], [], label=f"J{joint} Target", linestyle="--", color=color
+                )
+                (line_actual,) = self.ax.plot(
+                    [], [], label=f"J{joint} Actual", linestyle="-", color=color
+                )
+                self.lines[joint] = (line_target, line_actual)
             self.ax.set_xlabel("Time (s)")
             self.ax.set_ylabel("Angle (deg)")
-            self.ax.set_title(f"Joint {PLOT_JOINT_INDEX} Target vs Actual")
+            if self.plot_joints:
+                joints_text = ",".join(str(j) for j in self.plot_joints)
+                self.ax.set_title(f"Joints {joints_text} Target vs Actual")
+            else:
+                self.ax.set_title("Joint Target vs Actual")
             self.ax.grid(True)
-            self.ax.legend(loc="upper right")
+            self.ax.legend(loc="upper right", ncol=2, fontsize=8)
             plt.show(block=False)
 
         def _on_close(self, _event) -> None:
@@ -348,22 +373,34 @@ if HAS_PLOT:
 
         def update(self) -> None:
             with state.lock:
-                t = list(state.plot_time)
-                y_target = list(state.plot_target)
-                y_actual = list(state.plot_actual)
+                series = {
+                    idx: (
+                        list(state.plot_time.get(idx, [])),
+                        list(state.plot_target.get(idx, [])),
+                        list(state.plot_actual.get(idx, [])),
+                    )
+                    for idx in self.plot_joints
+                }
 
-            if not t:
+            all_t = [v for t, _, _ in series.values() for v in t]
+            if not all_t:
                 plt.pause(0.001)
                 return
+            for idx in self.plot_joints:
+                t, y_target, y_actual = series.get(idx, ([], [], []))
+                line_target, line_actual = self.lines[idx]
+                line_target.set_data(t, y_target)
+                line_actual.set_data(t, y_actual)
 
-            self.line_target.set_data(t, y_target)
-            self.line_actual.set_data(t, y_actual)
-
-            t_max = t[-1]
+            t_max = max(all_t)
             t_min = max(0.0, t_max - PLOT_WINDOW_SEC)
             self.ax.set_xlim(t_min, t_max + 0.1)
 
-            vals = [v for v in (y_target + y_actual) if v == v]
+            vals = []
+            for _, y_target, y_actual in series.values():
+                for v in y_target + y_actual:
+                    if v == v:
+                        vals.append(v)
             if vals:
                 y_min = min(vals)
                 y_max = max(vals)

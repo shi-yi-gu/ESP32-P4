@@ -47,7 +47,7 @@ void System_Init() {
     sharedData.servoAngleQueue = xQueueCreate(1, sizeof(ServoAngleData_t));
     sharedData.servoTelemetryQueue = xQueueCreate(1, sizeof(ServoTelemetryData_t));
     sharedData.mappedAngleQueue = xQueueCreate(1, sizeof(MappedAngleData_t));
-    sharedData.jointDebugQueue = xQueueCreate(3, sizeof(JointDebugData_t));
+    sharedData.jointDebugQueue = xQueueCreate(8, sizeof(JointDebugData_t));
 
     if (!sharedData.cmdQueue || !sharedData.statusQueue ||
         !sharedData.canRxQueue || !sharedData.canTxQueue ||
@@ -79,7 +79,7 @@ void System_Init() {
     angleSolver.init(zeros, ratios, dirs);
 
     float pidConfigs[2][PID_PARAMETER_NUM] = {
-        {30.0f, 0.2f, 0.0f, 0.0f, 100.0f, 600.0f},
+        {20.0f, 0.2f, 0.0f, 0.0f, 100.0f, 600.0f},
         {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 30719.0f}
     };
     angleSolver.setPIDParams(pidConfigs);
