@@ -96,6 +96,10 @@ typedef struct {
 
     float targetAngles[ENCODER_TOTAL_NUM];
     SemaphoreHandle_t targetAnglesMutex;
+
+    volatile uint8_t control_enabled;
+    int32_t calib_zero_raw_cache[ENCODER_TOTAL_NUM];
+    volatile uint8_t calib_zero_raw_valid;
 } TaskSharedData_t;
 
 #endif // TASK_SHARED_DATA_H

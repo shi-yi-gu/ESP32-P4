@@ -61,6 +61,9 @@ void System_Init() {
         while (1) {}
     }
     memset(sharedData.targetAngles, 0, sizeof(sharedData.targetAngles));
+    memset(sharedData.calib_zero_raw_cache, 0, sizeof(sharedData.calib_zero_raw_cache));
+    sharedData.control_enabled = 0;
+    sharedData.calib_zero_raw_valid = 0;
 
     // Keep all buses initialized to avoid changing existing wiring assumptions.
     servoBus0.begin(0, 21, 20, 1000000);

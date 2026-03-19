@@ -395,9 +395,10 @@ void taskSolver(void* parameter)
             memcpy(localTargets, sharedData->targetAngles, sizeof(localTargets));
             xSemaphoreGive(sharedData->targetAnglesMutex);
         }
+        const bool controlEnabled = (sharedData->control_enabled != 0);
 
         // 调试：生成正弦目标
-        if (kDebugUseTestTargets) {
+        if (controlEnabled && kDebugUseTestTargets) {
             for (uint8_t di = 0; di < kDebugJointCount; di++) {
                 uint8_t jointIndex = kDebugJointIndices[di];
                 if (jointIndex >= ENCODER_TOTAL_NUM) {
@@ -454,7 +455,7 @@ void taskSolver(void* parameter)
             uint8_t id = jointMap[jointIndex].servoID;
             ServoBusManager* pBus = getBusByIndex(bus);
 
-            if (shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex)) {
+            if (!controlEnabled || shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex)) {
                 if (pBus && pBus->isOnline(id)) {
                     int16_t holdPos = constrain(absolutePosition[jointIndex], -30719, 30719);
                     pBus->setTarget(id, holdPos, 1000, 50);
@@ -466,7 +467,7 @@ void taskSolver(void* parameter)
             }
 
             // 调试：生成正弦目标
-        if (kDebugUseTestTargets) {
+            if (controlEnabled && kDebugUseTestTargets) {
                 // 调试：仅对指定 bus/id 下发
                 if (pBus &&
                     bus == kTestActiveBusIndex &&

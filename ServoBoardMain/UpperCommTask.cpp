@@ -3,6 +3,7 @@
 #include "TaskSharedData.h"
 #include "CalibrationTask.h"
 
+#include <math.h>
 #include <string.h>
 
 extern volatile uint8_t g_calibrationUIStatus;
@@ -15,6 +16,21 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_SERVO_TELEM 0x05
 #define PACKET_TYPE_JOINT1_DEBUG 0x04
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
+
+#define CMD_CALIBRATE 0xCA
+#define CMD_ANGLE_CTRL 0xCB
+#define CMD_START 0xCC
+#define CMD_STOP 0xCD
+#define CMD_RESET 0xCE
+#define CMD_CALIB_DATA 0xCF
+#define CMD_MOTOR_POS 0xD0
+
+static const size_t kFloatPayloadBytes = ENCODER_TOTAL_NUM * sizeof(float);
+static const size_t kMotorPosPayloadBytes = ENCODER_TOTAL_NUM * sizeof(uint16_t);
+static const size_t kCmdAngleFrameBytes = 1 + kFloatPayloadBytes;
+static const size_t kCmdCalibDataFrameBytes = 1 + kFloatPayloadBytes;
+static const size_t kCmdMotorPosFrameBytes = 1 + kMotorPosPayloadBytes;
+static const size_t kSerialRxBufferSize = 512;
 
 static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
 {
@@ -124,7 +140,38 @@ static void sendDataPacket(ServoStatus_t* pServo,
     }
 }
 
-static void applyTargetAngles(TaskSharedData_t* sharedData, float* angles, uint8_t count)
+static float decodeFloatLittleEndian(const uint8_t* data)
+{
+    uint32_t bits = 0;
+    bits |= (uint32_t)data[0];
+    bits |= ((uint32_t)data[1] << 8);
+    bits |= ((uint32_t)data[2] << 16);
+    bits |= ((uint32_t)data[3] << 24);
+
+    float out = 0.0f;
+    memcpy(&out, &bits, sizeof(out));
+    return out;
+}
+
+static bool parseFloatArrayLittleEndian(const uint8_t* payload, size_t payloadLen, float* outValues, uint8_t count)
+{
+    if (!payload || !outValues) {
+        return false;
+    }
+
+    const size_t required = (size_t)count * sizeof(float);
+    if (payloadLen < required) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        outValues[i] = decodeFloatLittleEndian(payload + (size_t)i * sizeof(float));
+    }
+    return true;
+}
+
+static void applyTargetAngles(TaskSharedData_t* sharedData, const float* angles, uint8_t count)
 {
     if (count > ENCODER_TOTAL_NUM) count = ENCODER_TOTAL_NUM;
     if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(10)) == pdTRUE)
@@ -137,31 +184,187 @@ static void applyTargetAngles(TaskSharedData_t* sharedData, float* angles, uint8
     }
 }
 
+static void clearTargetAngles(TaskSharedData_t* sharedData)
+{
+    float zeroAngles[ENCODER_TOTAL_NUM] = {0.0f};
+    applyTargetAngles(sharedData, zeroAngles, ENCODER_TOTAL_NUM);
+}
+
+static void cacheCalibZeroRaw(TaskSharedData_t* sharedData, const float* values, uint8_t count)
+{
+    if (!sharedData || !values) {
+        return;
+    }
+
+    if (count > ENCODER_TOTAL_NUM) {
+        count = ENCODER_TOTAL_NUM;
+    }
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        float v = values[i];
+        if (!isfinite(v)) {
+            v = 0.0f;
+        }
+        sharedData->calib_zero_raw_cache[i] = (int32_t)lroundf(v);
+    }
+    for (uint8_t i = count; i < ENCODER_TOTAL_NUM; i++)
+    {
+        sharedData->calib_zero_raw_cache[i] = 0;
+    }
+    sharedData->calib_zero_raw_valid = 1;
+}
+
+static size_t getCommandFrameLength(uint8_t cmd)
+{
+    switch (cmd)
+    {
+        case CMD_CALIBRATE:
+        case CMD_START:
+        case CMD_STOP:
+        case CMD_RESET:
+            return 1;
+        case CMD_ANGLE_CTRL:
+            return kCmdAngleFrameBytes;
+        case CMD_CALIB_DATA:
+            return kCmdCalibDataFrameBytes;
+        case CMD_MOTOR_POS:
+            return kCmdMotorPosFrameBytes;
+        default:
+            return 0;
+    }
+}
+
+static void handleLegacySingleByteCommand(TaskSharedData_t* sharedData, uint8_t cmd)
+{
+    if (cmd == (uint8_t)'c') {
+        g_calibrationUIStatus = CALIB_STATUS_IDLE;
+        return;
+    }
+
+    if (cmd == (uint8_t)'b') {
+        clearTargetAngles(sharedData);
+    }
+}
+
+static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* frame, size_t frameLen)
+{
+    if (!sharedData || !frame || frameLen == 0) {
+        return;
+    }
+
+    const uint8_t cmd = frame[0];
+
+    if (cmd == CMD_CALIBRATE)
+    {
+        g_calibrationUIStatus = CALIB_STATUS_IDLE;
+        return;
+    }
+
+    if (cmd == CMD_START)
+    {
+        sharedData->control_enabled = 1;
+        return;
+    }
+
+    if (cmd == CMD_STOP)
+    {
+        sharedData->control_enabled = 0;
+        return;
+    }
+
+    if (cmd == CMD_RESET)
+    {
+        clearTargetAngles(sharedData);
+        sharedData->control_enabled = 0;
+        return;
+    }
+
+    if (cmd == CMD_ANGLE_CTRL)
+    {
+        float parsedAngles[ENCODER_TOTAL_NUM] = {0.0f};
+        if (parseFloatArrayLittleEndian(frame + 1, frameLen - 1, parsedAngles, ENCODER_TOTAL_NUM)) {
+            applyTargetAngles(sharedData, parsedAngles, ENCODER_TOTAL_NUM);
+        }
+        return;
+    }
+
+    if (cmd == CMD_CALIB_DATA)
+    {
+        float zeroRaw[ENCODER_TOTAL_NUM] = {0.0f};
+        if (parseFloatArrayLittleEndian(frame + 1, frameLen - 1, zeroRaw, ENCODER_TOTAL_NUM)) {
+            cacheCalibZeroRaw(sharedData, zeroRaw, ENCODER_TOTAL_NUM);
+        }
+        return;
+    }
+
+    // CMD_MOTOR_POS is parsed for framing compatibility but intentionally ignored for now.
+}
+
 void taskUpperComm(void* parameter)
 {
     TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;
     MappedAngleData_t mappedData;
+    uint8_t rxBuffer[kSerialRxBufferSize];
+    size_t rxLen = 0;
 
     Serial.println("<<<SYS_READY>>>");
 
     for (;;)
     {
-        if (Serial.available())
+        while (Serial.available())
         {
-            uint8_t rxByte = Serial.read();
-
-            // Calibration is disabled in current test mode.
-            if (rxByte == 'c' || rxByte == 0xCA)
-            {
-                g_calibrationUIStatus = CALIB_STATUS_IDLE;
+            int byteVal = Serial.read();
+            if (byteVal < 0) {
+                break;
             }
 
-            if (rxByte == 'b' || rxByte == 0xCB)
-            {
-                float parsedAngles[ENCODER_TOTAL_NUM] = {0.0f};
-                // TODO: parse 21 float values from serial payload.
-                applyTargetAngles(sharedData, parsedAngles, ENCODER_TOTAL_NUM);
+            if (rxLen < sizeof(rxBuffer)) {
+                rxBuffer[rxLen++] = (uint8_t)byteVal;
+            } else {
+                memmove(rxBuffer, rxBuffer + 1, sizeof(rxBuffer) - 1);
+                rxBuffer[sizeof(rxBuffer) - 1] = (uint8_t)byteVal;
+                rxLen = sizeof(rxBuffer);
             }
+        }
+
+        size_t parseOffset = 0;
+        while (parseOffset < rxLen)
+        {
+            const uint8_t cmd = rxBuffer[parseOffset];
+
+            if (cmd == (uint8_t)'c' || cmd == (uint8_t)'b')
+            {
+                handleLegacySingleByteCommand(sharedData, cmd);
+                parseOffset += 1;
+                continue;
+            }
+
+            const size_t frameLen = getCommandFrameLength(cmd);
+            if (frameLen == 0)
+            {
+                // Unknown command byte: drop and keep scanning.
+                parseOffset += 1;
+                continue;
+            }
+
+            if ((parseOffset + frameLen) > rxLen)
+            {
+                // Incomplete command frame, keep for next loop.
+                break;
+            }
+
+            handleParsedCommand(sharedData, rxBuffer + parseOffset, frameLen);
+            parseOffset += frameLen;
+        }
+
+        if (parseOffset > 0)
+        {
+            const size_t remain = rxLen - parseOffset;
+            if (remain > 0) {
+                memmove(rxBuffer, rxBuffer + parseOffset, remain);
+            }
+            rxLen = remain;
         }
 
         bool sentPacket = false;
