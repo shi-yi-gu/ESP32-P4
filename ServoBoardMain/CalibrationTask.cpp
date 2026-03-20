@@ -6,6 +6,16 @@
 #include "JointCalibrationProfile.h"
 #include "ServoBusManager.h"
 
+// CalibrationTask 模块职责：
+// 1) 管理关节标定参数与标定结果；
+// 2) 提供单关节自动标定流程；
+// 3) 在当前测试阶段，支持手工标定结果注入并停用自动标定任务。
+//
+// 数据来源约束：
+// - 编码器原始值来自 canRxQueue（RemoteSensorData_t）；
+// - 舵机运动与反馈来自 ServoBusManager；
+// - 标定状态通过 g_calibrationUIStatus 对上位机可见。
+
 extern ServoBusManager servoBus0;
 extern ServoBusManager servoBus1;
 extern ServoBusManager servoBus2;
@@ -13,10 +23,12 @@ extern ServoBusManager servoBus3;
 extern JointMapItem jointMap[ENCODER_TOTAL_NUM];
 extern volatile uint8_t g_calibrationUIStatus;
 
+// 全局标定配置与结果（按关节索引 0~ENCODER_TOTAL_NUM-1）。
 JointCalibrationConfig g_jointCalibConfig[ENCODER_TOTAL_NUM];
 JointCalibrationResult g_jointCalibResult[ENCODER_TOTAL_NUM];
 
-// Encoder installation direction: +1 normal, -1 reversed.
+// 编码器安装方向：+1 为正向安装，-1 为反向安装。
+// 所有角度映射前都需通过该表统一方向，避免同一动作出现正负号不一致。
 int8_t g_encoderDirection[ENCODER_TOTAL_NUM] = {
     1, -1, -1, 1,
     1, -1, -1, 1,
@@ -25,11 +37,12 @@ int8_t g_encoderDirection[ENCODER_TOTAL_NUM] = {
     1,  1, -1, -1, 1
 };
 
-// Manual fallback offset table.
+// 手工回退 offset 表：
+// 当自动标定结果不可用时，AngleSolver 会读取该表作为零偏。
 int32_t g_encoderOffsetManual[ENCODER_TOTAL_NUM] = {0};
 
-// Test mode: manual encoderMax for all joints.
-// Replace these values with your measured encoderMax.
+// 测试模式手工 encoderMax 表（单位：编码器计数）。
+// 约定：值为 0 表示该关节未提供手工标定数据。
 static const uint8_t kTestJointCount = ENCODER_TOTAL_NUM;
 static const int32_t kManualEncoderMax[kTestJointCount] = {
     0, 0, 0, 0,
@@ -42,6 +55,7 @@ static const int32_t kManualEncoderMax[kTestJointCount] = {
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
 
+// 按安装方向统一编码器原始值方向，输出范围 [0, modulo)。
 static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction) {
     int32_t oriented = (int32_t)rawValue & (kEncoderModulo - 1);
     if (direction < 0) {
@@ -50,6 +64,7 @@ static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction) {
     return oriented;
 }
 
+// 将 busIndex 映射为总线对象；非法索引返回 NULL。
 static ServoBusManager* getBusByIndex(uint8_t busIndex) {
     switch (busIndex) {
         case 0: return &servoBus0;
@@ -60,12 +75,14 @@ static ServoBusManager* getBusByIndex(uint8_t busIndex) {
     }
 }
 
+// 舵机绝对位置限幅，防止下发超出协议/硬件安全范围的目标值。
 static int16_t clampToServoPos(int32_t value) {
     if (value > 30719) return 30719;
     if (value < -30719) return -30719;
     return (int16_t)value;
 }
 
+// 计算目标与当前编码器差值，并在整圈边界处做环绕归一化（最短路径）。
 static int32_t wrapEncoderDelta(int32_t target, int32_t actual) {
     int32_t delta = target - actual;
     while (delta > kEncoderHalfTurn) delta -= kEncoderModulo;
@@ -73,6 +90,8 @@ static int32_t wrapEncoderDelta(int32_t target, int32_t actual) {
     return delta;
 }
 
+// 从 CAN 最新快照读取关节编码器值，并做方向统一。
+// 失败条件：队列无数据、数据无效、关节报错、参数越界。
 static bool readLatestEncoderRaw(TaskSharedData_t* sharedData, uint8_t jointIndex, int32_t* outEncoder) {
     if (!sharedData || !outEncoder || jointIndex >= ENCODER_TOTAL_NUM) return false;
 
@@ -85,6 +104,9 @@ static bool readLatestEncoderRaw(TaskSharedData_t* sharedData, uint8_t jointInde
     return true;
 }
 
+// 标定后回退动作：
+// 将关节移动到 angleReserved 预留角度，避免长时间停在机械限位附近。
+// 成功返回 true；超时或反馈不可用返回 false（不影响标定主结果已写回）。
 static bool moveJointToReserved(TaskSharedData_t* sharedData,
                                 ServoBusManager* pBus,
                                 uint8_t servoId,
@@ -132,10 +154,16 @@ static bool moveJointToReserved(TaskSharedData_t* sharedData,
     return false;
 }
 
+// 装载默认标定参数（来自 profile 表）。
 void initDefaultCalibrationConfig(JointCalibrationConfig* cfg, uint8_t count) {
     loadJointCalibrationProfile(cfg, count);
 }
 
+// 测试模式初始化：
+// 1) 装载默认配置；
+// 2) 用手工 encoderMax 推导 offset/angleMax；
+// 3) 将可用结果同步到手工回退表；
+// 4) 保持标定状态为 IDLE（自动标定任务关闭）。
 void initManualCalibrationForTest(void) {
     initDefaultCalibrationConfig(g_jointCalibConfig, ENCODER_TOTAL_NUM);
     memset(g_jointCalibResult, 0, sizeof(g_jointCalibResult));
@@ -148,17 +176,22 @@ void initManualCalibrationForTest(void) {
         out.encoderMax = kManualEncoderMax[i];
         out.offset = out.encoderMax - cfg.angleScope + cfg.bottomReserved;
         out.angleMax = cfg.angleScope - cfg.bottomReserved - cfg.topReserved;
-        // encoderMax == 0 means manual calibration not provided.
+        // 约定：encoderMax == 0 代表该关节未提供有效手工标定数据。
         out.success = (out.encoderMax != 0);
 
-        // Keep fallback offset aligned for debug convenience.
+        // 同步写入回退表，便于调试阶段统一读取路径。
         g_encoderOffsetManual[i] = out.offset;
     }
 
-    // Calibration task is disabled during this test stage.
+    // 当前测试阶段不运行自动标定任务。
     g_calibrationUIStatus = CALIB_STATUS_IDLE;
 }
 
+// 单关节自动标定主流程：
+// - 逐步“收紧”舵机直到负载跨阈值，判定触及机械限位；
+// - 读取该时刻编码器值作为 encoderMax；
+// - 根据配置推导 offset/angleMax，并尝试回退到预留角度。
+// 返回 false 的典型原因：参数非法、总线不可用、编码器读取失败、超时未触发阈值。
 bool runSingleJointCalibration(TaskSharedData_t* sharedData,
                                uint8_t jointIndex,
                                const JointCalibrationConfig& cfg,
@@ -183,6 +216,7 @@ bool runSingleJointCalibration(TaskSharedData_t* sharedData,
     const uint32_t searchBeginMs = millis();
 
     while (millis() - searchBeginMs < cfg.maxSearchMs) {
+        // 每轮按 tightenStep 推进一步，0 步长会被强制为 1，避免死循环。
         int32_t tightenStep = (int32_t)cfg.tightenStep;
         if (tightenStep == 0) tightenStep = 1;
         commandPos = clampToServoPos((int32_t)commandPos + tightenStep);
@@ -191,6 +225,7 @@ bool runSingleJointCalibration(TaskSharedData_t* sharedData,
         vTaskDelay(pdMS_TO_TICKS(cfg.settleMs));
 
         const int16_t load = pBus->readLoad(servoId);
+        // 采用“先低后高”的边沿触发，降低启动瞬态噪声导致的误判概率。
         if (load < cfg.loadThreshold) {
             seenBelowThreshold = true;
         }
@@ -206,6 +241,7 @@ bool runSingleJointCalibration(TaskSharedData_t* sharedData,
             out->angleMax = cfg.angleScope - cfg.bottomReserved - cfg.topReserved;
             out->success = true;
 
+            // 标定成功后尝试回退到预留角；即使回退失败，也保持成功结果。
             moveJointToReserved(sharedData, pBus, servoId, jointIndex, cfg, out->offset);
             return true;
         }
@@ -216,7 +252,7 @@ bool runSingleJointCalibration(TaskSharedData_t* sharedData,
 
 void taskServoCalibration(void* parameter) {
     (void)parameter;
-    // Disabled for current test stage: no automatic calibration movement.
+    // 当前测试阶段：自动标定任务占位关闭，避免后台自主运动影响联调。
     g_calibrationUIStatus = CALIB_STATUS_IDLE;
     vTaskDelete(NULL);
 }

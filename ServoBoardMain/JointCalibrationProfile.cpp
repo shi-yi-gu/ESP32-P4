@@ -1,27 +1,38 @@
 #include "JointCalibrationProfile.h"
 
-// 14-bit magnetic encoder: 16384 counts per revolution.
+// JointCalibrationProfile 模块职责：
+// - 维护“关节索引 -> 标定参数”的静态映射表；
+// - 为 CalibrationTask 提供统一的默认/专用标定配置来源；
+// - 约定角度相关字段在表内统一以“编码器计数”存储。
+
+// 14 位磁编码器：每圈 16384 计数。
 static constexpr float kEncoderCountsPerRev = 16384.0f;
+
+// 角度(度) -> 编码器计数：
+// 采用“四舍五入到最近整数”（正数 +0.5，负数 -0.5）以减少系统性偏差。
 static constexpr int32_t degToEnc(float deg) {
     return (int32_t)(deg * kEncoderCountsPerRev / 360.0f + (deg >= 0.0f ? 0.5f : -0.5f));
 }
 
-// Default calibration values for joints without dedicated tuning.
+// 默认标定配置：
+// 供未单独调参的关节使用，作为保守可用的通用参数。
+// 字段顺序：
+// angleScope, bottomReserved, topReserved, angleReserved,
+// loadThreshold, tightenStep, tightenSpeed, tightenAcc, settleMs, maxSearchMs
 static const JointCalibrationConfig kDefaultJointCalib = {
-    degToEnc(90.0f), // angleScope (deg -> count)
-    degToEnc(3.0f),  // bottomReserved (deg -> count)
-    degToEnc(3.0f),  // topReserved (deg -> count)
-    degToEnc(6.0f),  // angleReserved (deg -> count)
-    180,   // loadThreshold
-    10,    // tightenStep
-    150,   // tightenSpeed
-    10,    // tightenAcc
-    20,    // settleMs
-    5000   // maxSearchMs
+    degToEnc(90.0f), // angleScope：可用角度范围（度 -> 计数）
+    degToEnc(3.0f),  // bottomReserved：下边界预留（度 -> 计数）
+    degToEnc(3.0f),  // topReserved：上边界预留（度 -> 计数）
+    degToEnc(6.0f),  // angleReserved：标定完成后回退预留角（度 -> 计数）
+    180,   // loadThreshold：负载阈值
+    10,    // tightenStep：每步收紧步长
+    150,   // tightenSpeed：收紧速度
+    10,    // tightenAcc：收紧加速度
+    20,    // settleMs：每步下发后等待稳定时间
+    5000   // maxSearchMs：单关节搜索超时
 };
 
-// Joint 0~3: dedicated entries for real hardware tuning.
-// You can manually update these four blocks with measured values.
+// Joint 0~3：实机专用调参项（可按实测更新）。
 static const JointCalibrationConfig kJoint0Calib = {
     degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
@@ -41,8 +52,8 @@ static const JointCalibrationConfig kJoint3Calib = {
     degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
     180, 10, 150, 10, 20, 5000
 };
-// Joint 4~7: dedicated entries for real hardware tuning.
-// You can manually update these four blocks with measured values.
+
+// Joint 4~7：实机专用调参项（可按实测更新）。
 static const JointCalibrationConfig kJoint4Calib = {
     degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
@@ -63,18 +74,23 @@ static const JointCalibrationConfig kJoint7Calib = {
     180, 10, 150, 10, 20, 5000
 };
 
+// 标定配置总表：
+// - 下标严格对应 jointIndex；
+// - 0~7 使用专用参数；
+// - 8~20 使用默认参数；
+// - 索引与关节号一一对应，不可随意换序。
 const JointCalibrationConfig kJointCalibrationProfile[ENCODER_TOTAL_NUM] = {
-    // joint 0 ~ joint 6
+    // joint 0 ~ 6（专用）
     kJoint0Calib,       // 0
     kJoint1Calib,       // 1
     kJoint2Calib,       // 2
     kJoint3Calib,       // 3
-    kJoint4Calib, // 4
-    kJoint5Calib, // 5
-    kJoint6Calib, // 6
+    kJoint4Calib,       // 4
+    kJoint5Calib,       // 5
+    kJoint6Calib,       // 6
 
-    // joint 7 ~ joint 13
-    kJoint7Calib, // 7
+    // joint 7 ~ 13（7 专用，其余默认）
+    kJoint7Calib,       // 7
     kDefaultJointCalib, // 8
     kDefaultJointCalib, // 9
     kDefaultJointCalib, // 10
@@ -82,7 +98,7 @@ const JointCalibrationConfig kJointCalibrationProfile[ENCODER_TOTAL_NUM] = {
     kDefaultJointCalib, // 12
     kDefaultJointCalib, // 13
 
-    // joint 14 ~ joint 20
+    // joint 14 ~ 20（默认）
     kDefaultJointCalib, // 14
     kDefaultJointCalib, // 15
     kDefaultJointCalib, // 16
@@ -92,6 +108,10 @@ const JointCalibrationConfig kJointCalibrationProfile[ENCODER_TOTAL_NUM] = {
     kDefaultJointCalib  // 20
 };
 
+// 将 profile 拷贝到调用方缓存。
+// 安全约束：
+// - dst 为空时直接返回；
+// - count 超过 ENCODER_TOTAL_NUM 时自动截断。
 void loadJointCalibrationProfile(JointCalibrationConfig* dst, uint8_t count)
 {
     if (!dst) return;

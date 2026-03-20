@@ -5,41 +5,54 @@
 
 #include <string.h>
 
+// SystemTask 模块职责：
+// 1) 完成系统级资源初始化（队列、互斥锁、总线与求解器）；
+// 2) 维护跨任务共享对象 sharedData；
+// 3) 创建并拉起 UpperComm/CanComm/Solver 三个核心任务。
+
+// 上位机标定 UI 状态的一次性回传标志，由 UpperCommTask 读取并清零。
 volatile uint8_t g_calibrationUIStatus = 0;
 
+// 全局共享数据中心，保存任务间队列句柄与控制状态。
 TaskSharedData_t sharedData;
 
+// 任务句柄用于系统侧管理（当前主要用于可见性与后续扩展）。
 TaskHandle_t taskUpperCommHandle = NULL;
 TaskHandle_t taskCanCommHandle = NULL;
 TaskHandle_t taskSolverHandle = NULL;
 
+// 4 路舵机总线管理器实例，物理接线与 jointMap 对应。
 ServoBusManager servoBus0;
 ServoBusManager servoBus1;
 ServoBusManager servoBus2;
 ServoBusManager servoBus3;
 
+// 角度求解与双环控制实例。
 AngleSolver angleSolver;
 
-// Joint index (0~20) -> (busIndex, servoID)
+// 关节索引（0~20）到舵机地址（busIndex, servoID）的固定映射。
+// 该映射与硬件布线一致，调整顺序会改变关节到舵机的对应关系。
 JointMapItem jointMap[ENCODER_TOTAL_NUM] = {
-    // Bus 0
+    // 总线 0
     {0, 1}, {0, 2}, {0, 3}, {0, 4},
-    // Bus 1
+    // 总线 1
     {1, 1}, {1, 2}, {1, 3}, {1, 4},
-    // Bus 2
+    // 总线 2
     {2, 1}, {2, 2}, {2, 3}, {2, 4},
-    // Bus 3
+    // 总线 3
     {3, 1}, {3, 2}, {3, 3}, {3, 4},
-    // Remaining 5 joints (start from bus 0)
+    // 剩余 5 个关节（沿前序总线分配）
     {0, 5}, {1, 5}, {2, 5}, {3, 5}, {3, 6}
 };
 void System_Init() {
+    // 1) 串口初始化：用于上位机通信与启动日志输出。
     Serial.begin(921600);
     while (!Serial) {
         delay(10);
     }
     delay(1000);
 
+    // 2) 创建跨任务消息队列。
     sharedData.cmdQueue = xQueueCreate(5, sizeof(ServoCommand_t));
     sharedData.statusQueue = xQueueCreate(3, sizeof(ServoStatus_t));
     sharedData.canRxQueue = xQueueCreate(1, sizeof(RemoteSensorData_t));
@@ -53,11 +66,14 @@ void System_Init() {
         !sharedData.canRxQueue || !sharedData.canTxQueue ||
         !sharedData.servoAngleQueue || !sharedData.servoTelemetryQueue || !sharedData.mappedAngleQueue ||
         !sharedData.jointDebugQueue) {
+        // 资源不足时停在此处，避免系统在不完整状态下继续运行。
         while (1) {}
     }
 
+    // 3) 初始化目标角缓存与控制相关状态。
     sharedData.targetAnglesMutex = xSemaphoreCreateMutex();
     if (!sharedData.targetAnglesMutex) {
+        // 互斥锁创建失败同样进入安全停机。
         while (1) {}
     }
     memset(sharedData.targetAngles, 0, sizeof(sharedData.targetAngles));
@@ -65,12 +81,13 @@ void System_Init() {
     sharedData.control_enabled = 0;
     sharedData.calib_zero_raw_valid = 0;
 
-    // Keep all buses initialized to avoid changing existing wiring assumptions.
+    // 4) 初始化全部舵机总线，保持与现有接线假设一致。
     servoBus0.begin(0, 21, 20, 1000000);
     servoBus1.begin(1, 23, 22, 1000000);
     servoBus2.begin(2, 27, 26, 1000000);
     servoBus3.begin(3, 33, 32, 1000000);
 
+    // 5) 初始化求解器基础参数（默认零点/比例/方向）。
     int16_t zeros[ENCODER_TOTAL_NUM];
     float ratios[ENCODER_TOTAL_NUM];
     int8_t dirs[ENCODER_TOTAL_NUM];
@@ -81,15 +98,17 @@ void System_Init() {
     }
     angleSolver.init(zeros, ratios, dirs);
 
+    // 6) 设置双环 PID 参数。
     float pidConfigs[2][PID_PARAMETER_NUM] = {
         {20.0f, 0.2f, 0.0f, 0.0f, 100.0f, 600.0f},
         {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 30719.0f}
     };
     angleSolver.setPIDParams(pidConfigs);
 
-    // Test mode: no auto calibration movement, use manual encoderMax for joints 0~3.
+    // 7) 当前测试阶段：禁用自动标定动作，使用手动配置入口。
     initManualCalibrationForTest();
 
+    // 8) 创建上位机通信任务。
     xTaskCreate(
         taskUpperComm,
         "UpperComm",
@@ -99,6 +118,7 @@ void System_Init() {
         &taskUpperCommHandle
     );
 
+    // 9) 创建 CAN 通信任务。
     xTaskCreate(
         taskCanComm,
         "CanComm",
@@ -108,6 +128,7 @@ void System_Init() {
         &taskCanCommHandle
     );
 
+    // 10) 创建角度求解与执行任务。
     xTaskCreate(
         taskSolver,
         "Solver",
@@ -122,6 +143,7 @@ void System_Init() {
 }
 
 void System_Loop() {
+    // 主循环保持轻量占位，主要工作在各 FreeRTOS 任务中执行。
     vTaskDelay(pdMS_TO_TICKS(10));
 }
 
