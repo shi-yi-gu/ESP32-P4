@@ -7,7 +7,7 @@ import numpy as np
 from typing import List, Optional, Sequence, Tuple
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from protocol import MOTOR_COUNT
+from protocol import ENCODER_COUNT
 from hand_geometry import load_hand_geo
 
 CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
@@ -49,9 +49,9 @@ def _angles_21deg_to_20rad(angles_deg: List[float], mapping: Optional[list] = No
     """21 个电机角度（度）-> 20 个关节角（弧度）"""
     mapping = mapping or DEFAULT_ANGLE_MAPPING
     deg = list(angles_deg)
-    while len(deg) < MOTOR_COUNT:
+    while len(deg) < ENCODER_COUNT:
         deg.append(0.0)
-    deg = deg[:MOTOR_COUNT]
+    deg = deg[:ENCODER_COUNT]
     rad_list = []
     for finger_map in mapping:
         for idx in finger_map:

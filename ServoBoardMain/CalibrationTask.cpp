@@ -41,6 +41,23 @@ int8_t g_encoderDirection[ENCODER_TOTAL_NUM] = {
 // 当自动标定结果不可用时，AngleSolver 会读取该表作为零偏。
 int32_t g_encoderOffsetManual[ENCODER_TOTAL_NUM] = {0};
 
+static const uint8_t kJoint16Index = 16;
+static const int32_t kJoint16SecondaryOffsetDefault = 0;
+static const int32_t kJoint16TensionBiasDefault = 0;
+
+// joint16 双舵机标定约束默认配置：
+// 主舵机 bus3-id17，副舵机 bus3-id18，默认偏置为0。
+JointDualServoConstraint g_joint16DualServoConstraint = {
+    1,
+    kJoint16Index,
+    3,
+    17,
+    3,
+    18,
+    kJoint16SecondaryOffsetDefault,
+    kJoint16TensionBiasDefault
+};
+
 // 测试模式手工 encoderMax 表（单位：编码器计数）。
 // 约定：值为 0 表示该关节未提供手工标定数据。
 static const uint8_t kTestJointCount = ENCODER_TOTAL_NUM;
@@ -80,6 +97,34 @@ static int16_t clampToServoPos(int32_t value) {
     if (value > 30719) return 30719;
     if (value < -30719) return -30719;
     return (int16_t)value;
+}
+
+bool getJointDualServoConstraint(uint8_t jointIndex, JointDualServoConstraint* out) {
+    if (!out) {
+        return false;
+    }
+    if (g_joint16DualServoConstraint.enabled != 0 &&
+        g_joint16DualServoConstraint.jointIndex == jointIndex) {
+        *out = g_joint16DualServoConstraint;
+        return true;
+    }
+    return false;
+}
+
+bool computeSecondaryServoTargetForJoint(uint8_t jointIndex,
+                                         int32_t primaryTarget,
+                                         int16_t* outSecondaryTarget) {
+    if (!outSecondaryTarget) {
+        return false;
+    }
+    JointDualServoConstraint cfg;
+    if (!getJointDualServoConstraint(jointIndex, &cfg)) {
+        return false;
+    }
+    // 副舵机目标按拮抗关系计算。
+    const int32_t secondaryTarget = -primaryTarget + cfg.secondaryOffset + cfg.tensionBias;
+    *outSecondaryTarget = clampToServoPos(secondaryTarget);
+    return true;
 }
 
 // 计算目标与当前编码器差值，并在整圈边界处做环绕归一化（最短路径）。
@@ -147,6 +192,15 @@ static bool moveJointToReserved(TaskSharedData_t* sharedData,
 
         const int16_t targetPos = clampToServoPos(currentServoPos + step);
         pBus->setTarget(servoId, targetPos, cfg.tightenSpeed, cfg.tightenAcc);
+        JointDualServoConstraint dualCfg;
+        if (getJointDualServoConstraint(jointIndex, &dualCfg)) {
+            ServoBusManager* pSecBus = getBusByIndex(dualCfg.secondaryBusIndex);
+            int16_t secTarget = 0;
+            if (pSecBus && computeSecondaryServoTargetForJoint(jointIndex, targetPos, &secTarget)) {
+                pSecBus->setTarget(dualCfg.secondaryServoID, secTarget, cfg.tightenSpeed, cfg.tightenAcc);
+                pSecBus->syncWriteAll();
+            }
+        }
         pBus->syncWriteAll();
         vTaskDelay(pdMS_TO_TICKS(cfg.settleMs));
     }
@@ -184,6 +238,15 @@ void initManualCalibrationForTest(void) {
     }
 
     // 当前测试阶段不运行自动标定任务。
+    g_joint16DualServoConstraint.enabled = 1;
+    g_joint16DualServoConstraint.jointIndex = kJoint16Index;
+    g_joint16DualServoConstraint.primaryBusIndex = jointMap[kJoint16Index].busIndex;
+    g_joint16DualServoConstraint.primaryServoID = jointMap[kJoint16Index].servoID;
+    g_joint16DualServoConstraint.secondaryBusIndex = joint16SecondaryMotor.busIndex;
+    g_joint16DualServoConstraint.secondaryServoID = joint16SecondaryMotor.servoID;
+    g_joint16DualServoConstraint.secondaryOffset = kJoint16SecondaryOffsetDefault;
+    g_joint16DualServoConstraint.tensionBias = kJoint16TensionBiasDefault;
+
     g_calibrationUIStatus = CALIB_STATUS_IDLE;
 }
 
@@ -221,6 +284,15 @@ bool runSingleJointCalibration(TaskSharedData_t* sharedData,
         if (tightenStep == 0) tightenStep = 1;
         commandPos = clampToServoPos((int32_t)commandPos + tightenStep);
         pBus->setTarget(servoId, commandPos, cfg.tightenSpeed, cfg.tightenAcc);
+        JointDualServoConstraint dualCfg;
+        if (getJointDualServoConstraint(jointIndex, &dualCfg)) {
+            ServoBusManager* pSecBus = getBusByIndex(dualCfg.secondaryBusIndex);
+            int16_t secTarget = 0;
+            if (pSecBus && computeSecondaryServoTargetForJoint(jointIndex, commandPos, &secTarget)) {
+                pSecBus->setTarget(dualCfg.secondaryServoID, secTarget, cfg.tightenSpeed, cfg.tightenAcc);
+                pSecBus->syncWriteAll();
+            }
+        }
         pBus->syncWriteAll();
         vTaskDelay(pdMS_TO_TICKS(cfg.settleMs));
 

@@ -6,25 +6,20 @@
 #include <math.h>
 #include <string.h>
 
-// UpperCommTask 模块职责：
-// 1) 负责与上位机的串口收发；
-// 2) 将下位机状态打包成统一帧格式上报；
-// 3) 解析下行命令并同步到共享控制状态（目标角、控制使能、校准缓存）。
-
 extern volatile uint8_t g_calibrationUIStatus;
 
-// 上行帧协议：[0xFE][LEN][TYPE][PAYLOAD][0xFF]
+// 上行帧格式（下位机 -> 上位机）: [0xFE][LEN][TYPE][PAYLOAD][0xFF]
 #define PROTOCOL_HEADER 0xFE
 #define PROTOCOL_TAIL 0xFF
 #define PACKET_TYPE_SENSOR 0x01
 #define PACKET_TYPE_CALIB_ACK 0x02
 #define PACKET_TYPE_SERVO_ANGLE 0x03
-#define PACKET_TYPE_SERVO_TELEM 0x05
 #define PACKET_TYPE_JOINT1_DEBUG 0x04
-// 0x7FFF 在协议中保留为“断连”哨兵，避免与正常角度值冲突。
+#define PACKET_TYPE_SERVO_TELEM 0x05
+
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
-// 下行命令字节定义（与 desktop/protocol.py 保持一致）。
+// 下行指令（上位机 -> 下位机）
 #define CMD_CALIBRATE 0xCA
 #define CMD_ANGLE_CTRL 0xCB
 #define CMD_START 0xCC
@@ -33,16 +28,13 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define CMD_CALIB_DATA 0xCF
 #define CMD_MOTOR_POS 0xD0
 
-// 不同命令帧长度（命令字节 + payload）定义，用于串口流切包。
 static const size_t kFloatPayloadBytes = ENCODER_TOTAL_NUM * sizeof(float);
-static const size_t kMotorPosPayloadBytes = ENCODER_TOTAL_NUM * sizeof(uint16_t);
+static const size_t kMotorPosPayloadBytes = SERVO_TOTAL_NUM * sizeof(uint16_t);
 static const size_t kCmdAngleFrameBytes = 1 + kFloatPayloadBytes;
 static const size_t kCmdCalibDataFrameBytes = 1 + kFloatPayloadBytes;
 static const size_t kCmdMotorPosFrameBytes = 1 + kMotorPosPayloadBytes;
-// 接收缓冲用于处理分片和粘包，容量足够覆盖多帧命令。
 static const size_t kSerialRxBufferSize = 512;
 
-// 以大端格式写入 float（用于上行 debug 包字段编码）。
 static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
 {
     uint32_t bits = 0;
@@ -59,21 +51,14 @@ static void sendDataPacket(ServoStatus_t* pServo,
                            ServoTelemetryData_t* pTelemetry,
                            JointDebugData_t* pJointDebug)
 {
-    // 预留入参，当前版本暂未使用该结构体。
     (void)pServo;
 
     uint8_t buffer[256];
     size_t idx = 0;
 
     buffer[idx++] = PROTOCOL_HEADER;
-    buffer[idx++] = 0x00; // length placeholder
+    buffer[idx++] = 0x00; // LEN 占位，尾部统一回填
 
-    // 发送优先级：
-    // 1) 校准应答（一次性上报）
-    // 2) 映射角度
-    // 3) 舵机角度
-    // 4) 遥测
-    // 5) 单关节调试
     if (g_calibrationUIStatus != 0)
     {
         buffer[idx++] = PACKET_TYPE_CALIB_ACK;
@@ -88,7 +73,6 @@ static void sendDataPacket(ServoStatus_t* pServo,
             const bool channelValid = pMapped->isValid && (pMapped->validFlags[i] != 0);
             if (channelValid) {
                 val = pMapped->angleValues[i];
-                // 保护：避免把断连哨兵当作正常值上报。
                 if (val == PROTOCOL_DISCONNECT_SENTINEL) {
                     val = (int16_t)0x7FFE;
                 }
@@ -100,16 +84,15 @@ static void sendDataPacket(ServoStatus_t* pServo,
     else if (pServoAngle)
     {
         buffer[idx++] = PACKET_TYPE_SERVO_ANGLE;
-        for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
+        for (int i = 0; i < SERVO_TOTAL_NUM; i++)
         {
-            int32_t angle = pServoAngle->servoAngles[i];
-            buffer[idx++] = (angle >> 24) & 0xFF;
-            buffer[idx++] = (angle >> 16) & 0xFF;
-            buffer[idx++] = (angle >> 8) & 0xFF;
-            buffer[idx++] = angle & 0xFF;
+            const int32_t angle = pServoAngle->servoAngles[i];
+            buffer[idx++] = (uint8_t)((angle >> 24) & 0xFF);
+            buffer[idx++] = (uint8_t)((angle >> 16) & 0xFF);
+            buffer[idx++] = (uint8_t)((angle >> 8) & 0xFF);
+            buffer[idx++] = (uint8_t)(angle & 0xFF);
         }
-
-        for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
+        for (int i = 0; i < SERVO_TOTAL_NUM; i++)
         {
             buffer[idx++] = pServoAngle->onlineStatus[i];
         }
@@ -117,10 +100,10 @@ static void sendDataPacket(ServoStatus_t* pServo,
     else if (pTelemetry)
     {
         buffer[idx++] = PACKET_TYPE_SERVO_TELEM;
-        for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
+        for (int i = 0; i < SERVO_TOTAL_NUM; i++)
         {
-            int16_t speed = pTelemetry->speed[i];
-            int16_t load = pTelemetry->load[i];
+            const int16_t speed = pTelemetry->speed[i];
+            const int16_t load = pTelemetry->load[i];
             buffer[idx++] = (uint8_t)(((uint16_t)speed >> 8) & 0xFF);
             buffer[idx++] = (uint8_t)((uint16_t)speed & 0xFF);
             buffer[idx++] = (uint8_t)(((uint16_t)load >> 8) & 0xFF);
@@ -148,17 +131,13 @@ static void sendDataPacket(ServoStatus_t* pServo,
 
     buffer[idx++] = PROTOCOL_TAIL;
     buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
-
     Serial.write(buffer, idx);
 
-    // 校准状态包是一次性语义，发出后立即清零。
-    if (g_calibrationUIStatus != 0)
-    {
+    if (g_calibrationUIStatus != 0) {
         g_calibrationUIStatus = 0;
     }
 }
 
-// 从小端字节流解析 float（下行命令 payload 使用小端）。
 static float decodeFloatLittleEndian(const uint8_t* data)
 {
     uint32_t bits = 0;
@@ -166,24 +145,20 @@ static float decodeFloatLittleEndian(const uint8_t* data)
     bits |= ((uint32_t)data[1] << 8);
     bits |= ((uint32_t)data[2] << 16);
     bits |= ((uint32_t)data[3] << 24);
-
     float out = 0.0f;
     memcpy(&out, &bits, sizeof(out));
     return out;
 }
 
-// 将 payload 解析为 float 数组；长度不足或空指针时返回 false。
 static bool parseFloatArrayLittleEndian(const uint8_t* payload, size_t payloadLen, float* outValues, uint8_t count)
 {
     if (!payload || !outValues) {
         return false;
     }
-
     const size_t required = (size_t)count * sizeof(float);
     if (payloadLen < required) {
         return false;
     }
-
     for (uint8_t i = 0; i < count; i++)
     {
         outValues[i] = decodeFloatLittleEndian(payload + (size_t)i * sizeof(float));
@@ -191,13 +166,29 @@ static bool parseFloatArrayLittleEndian(const uint8_t* payload, size_t payloadLe
     return true;
 }
 
-// 将目标角写入共享数据（带互斥保护）。
+static bool parseInt16ArrayBigEndian(const uint8_t* payload, size_t payloadLen, int32_t* outValues, uint8_t count)
+{
+    if (!payload || !outValues) {
+        return false;
+    }
+    const size_t required = (size_t)count * sizeof(uint16_t);
+    if (payloadLen < required) {
+        return false;
+    }
+    for (uint8_t i = 0; i < count; i++)
+    {
+        const uint16_t raw = ((uint16_t)payload[(size_t)i * 2] << 8) | payload[(size_t)i * 2 + 1];
+        outValues[i] = (int16_t)raw;
+    }
+    return true;
+}
+
 static void applyTargetAngles(TaskSharedData_t* sharedData, const float* angles, uint8_t count)
 {
     if (count > ENCODER_TOTAL_NUM) count = ENCODER_TOTAL_NUM;
     if (xSemaphoreTake(sharedData->targetAnglesMutex, pdMS_TO_TICKS(10)) == pdTRUE)
     {
-        for (int i = 0; i < count; i++)
+        for (uint8_t i = 0; i < count; i++)
         {
             sharedData->targetAngles[i] = angles[i];
         }
@@ -205,28 +196,48 @@ static void applyTargetAngles(TaskSharedData_t* sharedData, const float* angles,
     }
 }
 
-// 重置目标角为全零，常用于 reset/legacy 控制路径。
 static void clearTargetAngles(TaskSharedData_t* sharedData)
 {
     float zeroAngles[ENCODER_TOTAL_NUM] = {0.0f};
     applyTargetAngles(sharedData, zeroAngles, ENCODER_TOTAL_NUM);
 }
 
-// 缓存上位机下发的校准零点（当前阶段仅缓存，不直接改求解链路）。
+static void applyMotorTargets(TaskSharedData_t* sharedData, const int32_t* targets, uint8_t count)
+{
+    if (!sharedData || !targets) {
+        return;
+    }
+    if (count > SERVO_TOTAL_NUM) {
+        count = SERVO_TOTAL_NUM;
+    }
+    for (uint8_t i = 0; i < count; i++)
+    {
+        sharedData->motorTargetRaw[i] = targets[i];
+    }
+}
+
+static void clearMotorTargets(TaskSharedData_t* sharedData)
+{
+    if (!sharedData) {
+        return;
+    }
+    for (uint8_t i = 0; i < SERVO_TOTAL_NUM; i++)
+    {
+        sharedData->motorTargetRaw[i] = 0;
+    }
+}
+
 static void cacheCalibZeroRaw(TaskSharedData_t* sharedData, const float* values, uint8_t count)
 {
     if (!sharedData || !values) {
         return;
     }
-
     if (count > ENCODER_TOTAL_NUM) {
         count = ENCODER_TOTAL_NUM;
     }
-
     for (uint8_t i = 0; i < count; i++)
     {
         float v = values[i];
-        // 保护：非法浮点值按 0 处理，避免污染缓存。
         if (!isfinite(v)) {
             v = 0.0f;
         }
@@ -239,7 +250,6 @@ static void cacheCalibZeroRaw(TaskSharedData_t* sharedData, const float* values,
     sharedData->calib_zero_raw_valid = 1;
 }
 
-// 返回命令总长度（含命令字节）。未知命令返回 0。
 static size_t getCommandFrameLength(uint8_t cmd)
 {
     switch (cmd)
@@ -260,21 +270,17 @@ static size_t getCommandFrameLength(uint8_t cmd)
     }
 }
 
-// 兼容旧版单字节命令：
-// 'c' -> 校准状态回到 IDLE；'b' -> 清空目标角。
 static void handleLegacySingleByteCommand(TaskSharedData_t* sharedData, uint8_t cmd)
 {
     if (cmd == (uint8_t)'c') {
         g_calibrationUIStatus = CALIB_STATUS_IDLE;
         return;
     }
-
     if (cmd == (uint8_t)'b') {
         clearTargetAngles(sharedData);
     }
 }
 
-// 处理已切好的完整命令帧。
 static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* frame, size_t frameLen)
 {
     if (!sharedData || !frame || frameLen == 0) {
@@ -285,44 +291,49 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_CALIBRATE)
     {
-        // 当前测试阶段不执行自动标定，仅复位 UI 状态。
         g_calibrationUIStatus = CALIB_STATUS_IDLE;
         return;
     }
 
     if (cmd == CMD_START)
     {
-        // 打开控制使能，Solver 才会从目标角驱动输出。
+        // 启动后不强制切模式，只恢复使能与故障计数。
         sharedData->control_enabled = 1;
+        sharedData->joint16_dual_feedback_fault = 0;
         return;
     }
 
     if (cmd == CMD_STOP)
     {
-        // 关闭控制使能，Solver 进入保持当前位置逻辑。
         sharedData->control_enabled = 0;
         return;
     }
 
     if (cmd == CMD_RESET)
     {
-        // reset 语义：清目标 + 停控。
+        // RESET: 回到角控模式，并清空角控/直控目标缓存。
         clearTargetAngles(sharedData);
+        clearMotorTargets(sharedData);
         sharedData->control_enabled = 0;
+        sharedData->control_mode = CONTROL_MODE_JOINT;
+        sharedData->joint16_dual_feedback_fault = 0;
         return;
     }
 
     if (cmd == CMD_ANGLE_CTRL)
     {
+        // 角控命令：严格按 21 路 float 小端解析。
         float parsedAngles[ENCODER_TOTAL_NUM] = {0.0f};
         if (parseFloatArrayLittleEndian(frame + 1, frameLen - 1, parsedAngles, ENCODER_TOTAL_NUM)) {
             applyTargetAngles(sharedData, parsedAngles, ENCODER_TOTAL_NUM);
+            sharedData->control_mode = CONTROL_MODE_JOINT;
         }
         return;
     }
 
     if (cmd == CMD_CALIB_DATA)
     {
+        // 标定零点数据：按 21 路写入缓存。
         float zeroRaw[ENCODER_TOTAL_NUM] = {0.0f};
         if (parseFloatArrayLittleEndian(frame + 1, frameLen - 1, zeroRaw, ENCODER_TOTAL_NUM)) {
             cacheCalibZeroRaw(sharedData, zeroRaw, ENCODER_TOTAL_NUM);
@@ -330,7 +341,15 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
         return;
     }
 
-    // CMD_MOTOR_POS：目前仅支持帧级兼容，业务逻辑暂不生效。
+    if (cmd == CMD_MOTOR_POS)
+    {
+        // 直控命令：严格按 22 路 uint16 大端解析并切到直控模式。
+        int32_t motorTargets[SERVO_TOTAL_NUM] = {0};
+        if (parseInt16ArrayBigEndian(frame + 1, frameLen - 1, motorTargets, SERVO_TOTAL_NUM)) {
+            applyMotorTargets(sharedData, motorTargets, SERVO_TOTAL_NUM);
+            sharedData->control_mode = CONTROL_MODE_DIRECT_MOTOR;
+        }
+    }
 }
 
 void taskUpperComm(void* parameter)
@@ -344,10 +363,9 @@ void taskUpperComm(void* parameter)
 
     for (;;)
     {
-        // 1) 收集串口字节流到本地缓冲，处理突发输入。
         while (Serial.available())
         {
-            int byteVal = Serial.read();
+            const int byteVal = Serial.read();
             if (byteVal < 0) {
                 break;
             }
@@ -355,14 +373,12 @@ void taskUpperComm(void* parameter)
             if (rxLen < sizeof(rxBuffer)) {
                 rxBuffer[rxLen++] = (uint8_t)byteVal;
             } else {
-                // 缓冲满时丢弃最旧字节，保证解析继续推进。
                 memmove(rxBuffer, rxBuffer + 1, sizeof(rxBuffer) - 1);
                 rxBuffer[sizeof(rxBuffer) - 1] = (uint8_t)byteVal;
                 rxLen = sizeof(rxBuffer);
             }
         }
 
-        // 2) 从缓冲中按“命令 + 固定长度 payload”切帧并处理。
         size_t parseOffset = 0;
         while (parseOffset < rxLen)
         {
@@ -378,14 +394,12 @@ void taskUpperComm(void* parameter)
             const size_t frameLen = getCommandFrameLength(cmd);
             if (frameLen == 0)
             {
-                // 未知命令：丢弃该字节继续同步。
                 parseOffset += 1;
                 continue;
             }
 
             if ((parseOffset + frameLen) > rxLen)
             {
-                // 帧未收齐：等待下一轮串口补齐。
                 break;
             }
 
@@ -402,7 +416,6 @@ void taskUpperComm(void* parameter)
             rxLen = remain;
         }
 
-        // 3) 上行状态发送（按优先级依次尝试）。
         bool sentPacket = false;
         if (xQueueReceive(sharedData->mappedAngleQueue, &mappedData, 0) == pdTRUE)
         {
@@ -437,7 +450,6 @@ void taskUpperComm(void* parameter)
             }
         }
 
-        // 固定任务节拍，降低串口与队列轮询占用。
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }

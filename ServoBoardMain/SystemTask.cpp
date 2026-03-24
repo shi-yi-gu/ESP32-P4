@@ -30,19 +30,26 @@ ServoBusManager servoBus3;
 // 角度求解与双环控制实例。
 AngleSolver angleSolver;
 
-// 关节索引（0~20）到舵机地址（busIndex, servoID）的固定映射。
-// 该映射与硬件布线一致，调整顺序会改变关节到舵机的对应关系。
+// 主映射：关节索引(0..20) -> 主舵机总线/ID。
 JointMapItem jointMap[ENCODER_TOTAL_NUM] = {
-    // 总线 0
-    {0, 1}, {0, 2}, {1, 3}, {2, 4},
-    // 总线 1
-    {0, 5}, {0, 6}, {0, 7}, {0, 8},
-    // 总线 2
-    {1, 9}, {1, 10}, {1, 11}, {1, 12},
-    // 总线 3
+    {0, 1},  {0, 2},  {1, 3},  {2, 4},
+    {0, 5},  {0, 6},  {0, 7},  {0, 8},
+    {1, 9},  {1, 10}, {1, 11}, {1, 12},
     {2, 13}, {2, 14}, {2, 15}, {2, 16},
-    // 剩余 5 个关节（沿前序总线分配）
-    {3, 17}, {3, 18}, {3, 19}, {3, 20}, {3, 21}
+    {3, 17}, {3, 19}, {3, 20}, {3, 21}, {3, 22}
+};
+
+// joint16 的副舵机（拮抗控制用）。
+MotorMapItem joint16SecondaryMotor = {3, 18};
+
+// 电机通道映射(0..21)：用于22通道直控与舵机角度/遥测上报。
+MotorMapItem motorMap[SERVO_TOTAL_NUM] = {
+    {0, 1},  {0, 2},  {1, 3},  {2, 4},
+    {0, 5},  {0, 6},  {0, 7},  {0, 8},
+    {1, 9},  {1, 10}, {1, 11}, {1, 12},
+    {2, 13}, {2, 14}, {2, 15}, {2, 16},
+    {3, 17}, {3, 18}, {3, 19}, {3, 20},
+    {3, 21}, {3, 22}
 };
 void System_Init() {
     // 1) 串口初始化：用于上位机通信与启动日志输出。
@@ -77,8 +84,11 @@ void System_Init() {
         while (1) {}
     }
     memset(sharedData.targetAngles, 0, sizeof(sharedData.targetAngles));
+    memset(sharedData.motorTargetRaw, 0, sizeof(sharedData.motorTargetRaw));
     memset(sharedData.calib_zero_raw_cache, 0, sizeof(sharedData.calib_zero_raw_cache));
     sharedData.control_enabled = 0;
+    sharedData.control_mode = CONTROL_MODE_JOINT;
+    sharedData.joint16_dual_feedback_fault = 0;
     sharedData.calib_zero_raw_valid = 0;
 
     // 4) 初始化全部舵机总线，保持与现有接线假设一致。
@@ -146,4 +156,3 @@ void System_Loop() {
     // 主循环保持轻量占位，主要工作在各 FreeRTOS 任务中执行。
     vTaskDelay(pdMS_TO_TICKS(10));
 }
-

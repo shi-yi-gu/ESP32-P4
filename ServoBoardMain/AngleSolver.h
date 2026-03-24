@@ -15,10 +15,15 @@ extern "C" {
 #include "ServoBusManager.h"
 #include "TaskSharedData.h"
 
-#define JOINT_COUNT 21
+#define JOINT_COUNT ENCODER_TOTAL_NUM
 #define STS_STEPS_PER_DEG 11.3777f
 
 struct JointMapItem {
+    uint8_t busIndex;
+    uint8_t servoID;
+};
+
+struct MotorMapItem {
     uint8_t busIndex;
     uint8_t servoID;
 };
@@ -47,7 +52,13 @@ private:
 };
 
 extern AngleSolver angleSolver;
+
+// Primary mapping: joint index (0..20) -> primary servo.
 extern JointMapItem jointMap[ENCODER_TOTAL_NUM];
+// Secondary mapping for joint16 dual-servo coupling.
+extern MotorMapItem joint16SecondaryMotor;
+// Motor channel mapping: 0..21 -> servo bus/id.
+extern MotorMapItem motorMap[SERVO_TOTAL_NUM];
 
 void taskSolver(void* parameter);
 

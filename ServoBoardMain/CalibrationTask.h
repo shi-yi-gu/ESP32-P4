@@ -52,6 +52,24 @@ extern JointCalibrationResult g_jointCalibResult[ENCODER_TOTAL_NUM];
 extern int8_t g_encoderDirection[ENCODER_TOTAL_NUM];
 extern int32_t g_encoderOffsetManual[ENCODER_TOTAL_NUM];
 
+// 双舵机关节约束（用于标定流程中的主副联动约束入口）。
+struct JointDualServoConstraint {
+    uint8_t enabled;
+    uint8_t jointIndex;
+    uint8_t primaryBusIndex;
+    uint8_t primaryServoID;
+    uint8_t secondaryBusIndex;
+    uint8_t secondaryServoID;
+    int32_t secondaryOffset;
+    int32_t tensionBias;
+};
+
+extern JointDualServoConstraint g_joint16DualServoConstraint;
+// 获取指定关节的双舵机约束配置（当前仅 joint16 启用）。
+bool getJointDualServoConstraint(uint8_t jointIndex, JointDualServoConstraint* out);
+// 根据主舵机目标计算副舵机拮抗目标。
+bool computeSecondaryServoTargetForJoint(uint8_t jointIndex, int32_t primaryTarget, int16_t* outSecondaryTarget);
+
 // 加载默认标定参数（来源于 JointCalibrationProfile）。
 void initDefaultCalibrationConfig(JointCalibrationConfig* cfg, uint8_t count);
 

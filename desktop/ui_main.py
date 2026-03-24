@@ -11,7 +11,7 @@ from typing import Callable, List, Optional, Tuple
 import threading
 import time
 
-from protocol import MOTOR_COUNT, ControlMode
+from protocol import ENCODER_COUNT, MOTOR_COUNT, ControlMode
 from data_models import HandModel, FingerTactile
 from core_logic import HandController
 from comm_layer import list_ports
@@ -33,11 +33,11 @@ _ANGLE_MAP = [[3, 0, 1, 2], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15], [16,
 def _preset_20rad_to_21deg(preset_20: tuple) -> List[float]:
     """将 20 关节角(弧度)预设转为 21 电机角度(度)"""
     import math
-    out = [0.0] * MOTOR_COUNT
+    out = [0.0] * ENCODER_COUNT
     flat = [x for row in preset_20 for x in row]
     for i, indices in enumerate(_ANGLE_MAP):
         for j, midx in enumerate(indices):
-            if i * 4 + j < len(flat) and midx < MOTOR_COUNT:
+            if i * 4 + j < len(flat) and midx < ENCODER_COUNT:
                 out[midx] = math.degrees(flat[i * 4 + j])
     return out
 
@@ -155,7 +155,7 @@ class HandGUI:
         self._action_callback = action_callback
 
         self.root = tk.Tk()
-        title = f"{MOTOR_COUNT}-DOF Dexterous Hand Control System"
+        title = f"{ENCODER_COUNT}-DOF Dexterous Hand Control System"
         if title_suffix:
             title = f"{title} - {title_suffix}"
         self.root.title(title)
@@ -326,7 +326,7 @@ class HandGUI:
         self.ax = self.fig.add_subplot(111, projection="3d")
         self.canvas = FigureCanvasTkAgg(self.fig, parent)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=False)
-        self._draw_hand_model([0.0] * MOTOR_COUNT, None)
+        self._draw_hand_model([0.0] * ENCODER_COUNT, None)
 
     def _setup_tactile_axis_buttons(self, parent):
         self._tactile_row = ttk.Frame(parent)
@@ -588,7 +588,7 @@ class HandGUI:
         self.fig.canvas.draw_idle()
 
     def _setup_control_panel(self, parent):
-        panel = ttk.LabelFrame(parent, text=f"Interactive Control ({MOTOR_COUNT} Channels)")
+        panel = ttk.LabelFrame(parent, text=f"Interactive Control (J{ENCODER_COUNT} / M{MOTOR_COUNT})")
         panel.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         mode_row = ttk.Frame(panel)
@@ -753,7 +753,8 @@ class HandGUI:
         ttk.Label(header, text="Confirm").grid(row=0, column=3, padx=2, sticky="w")
         ttk.Label(header, text="Target Slider").grid(row=0, column=4, padx=2, sticky="w")
 
-        for i in range(MOTOR_COUNT):
+        channel_count = MOTOR_COUNT if is_motor else ENCODER_COUNT
+        for i in range(channel_count):
             row = ttk.Frame(inner)
             row.pack(fill=tk.X, padx=2, pady=1)
             label_prefix = "M" if is_motor else "J"
@@ -919,7 +920,7 @@ class HandGUI:
         self._emit_action("Click [Zero All]")
         for v in self._joint_target_vars:
             v.set(0.0)
-        self._draw_hand_model([0.0] * MOTOR_COUNT, None)
+        self._draw_hand_model([0.0] * ENCODER_COUNT, None)
 
     def _on_calibrate(self):
         self._emit_action("Click [Calibrate]")
@@ -956,11 +957,11 @@ class HandGUI:
             return
         self._emit_action("Click [Apply All Angles]")
         try:
-            angles = [self._joint_target_vars[i].get() for i in range(min(MOTOR_COUNT, len(self._joint_target_vars)))]
-            if len(angles) < MOTOR_COUNT:
-                angles.extend([0.0] * (MOTOR_COUNT - len(angles)))
+            angles = [self._joint_target_vars[i].get() for i in range(min(ENCODER_COUNT, len(self._joint_target_vars)))]
+            if len(angles) < ENCODER_COUNT:
+                angles.extend([0.0] * (ENCODER_COUNT - len(angles)))
             self.controller.set_target_angles(angles)
-            self.status_var.set(f"Sent {MOTOR_COUNT} target joint angles")
+            self.status_var.set(f"Sent {ENCODER_COUNT} target joint angles")
         except ValueError as e:
             messagebox.showerror("Parameter Error", str(e))
         except Exception as e:
@@ -985,7 +986,7 @@ class HandGUI:
 
         if hasattr(self, "_joint_curr_vars"):
             joint_has_data = bool(getattr(s, "has_sensor_data", False))
-            for i in range(min(MOTOR_COUNT, len(self._joint_curr_vars))):
+            for i in range(min(ENCODER_COUNT, len(self._joint_curr_vars))):
                 if joint_has_data and i < len(s.angles):
                     a = s.angles[i]
                     self._joint_curr_vars[i].set(f"{a:6.1f}")
@@ -1013,7 +1014,7 @@ class HandGUI:
             now = time.time()
             if now - getattr(self, "_alg_last_print", 0.0) >= 0.2:
                 self._alg_last_print = now
-                line = " ".join([f"J{i}:{s.angles[i]:.1f}" for i in range(min(21, len(s.angles)))])
+                line = " ".join([f"J{i}:{s.angles[i]:.1f}" for i in range(min(ENCODER_COUNT, len(s.angles)))])
                 self._append_algorithm_output(line)
 
         # 有触觉数据时显示触觉轴按钮
@@ -1040,10 +1041,10 @@ class HandGUI:
         if hasattr(s, "joint_debug_valid") and s.joint_debug_valid:
             n_debug_valid = sum(1 for f in s.joint_debug_valid if f)
         base = (
-            f"Encoders: {MOTOR_COUNT} | Errors: {err_count} | Calib: {s.calib_status}"
+            f"Encoders: {ENCODER_COUNT} | Errors: {err_count} | Calib: {s.calib_status}"
             f" | Servo Online: {n_online}/{MOTOR_COUNT}"
             f" | Telem Online: {n_telem_online}/{MOTOR_COUNT}"
-            f" | Debug Valid: {n_debug_valid}/{MOTOR_COUNT}"
+            f" | Debug Valid: {n_debug_valid}/{ENCODER_COUNT}"
         )
         if paused:
             base = "[Paused] " + base
