@@ -3,37 +3,69 @@
 
 #include <string.h>
 
-// CanCommTask 模块职责：
-// 1) 接收 CAN/TWAI 总线数据并聚合为 RemoteSensorData_t 快照；
-// 2) 将快照发布到 sharedData->canRxQueue；
-// 3) 从 sharedData->canTxQueue 取控制命令并转发到 CAN 总线。
+static_assert(
+    CAN_ERROR_DETAIL_FRAME_COUNT == (CAN_ID_ERROR_DETAIL_LAST - CAN_ID_ERROR_DETAIL_BASE + 1),
+    "Error-detail ID range must match frame count.");
+static_assert(
+    CAN_ERROR_DETAIL_FRAME_COUNT * CAN_ERROR_DETAIL_CODES_PER_FRAME == ENCODER_TOTAL_NUM,
+    "Error-detail payload must cover all encoder channels.");
+static_assert(
+    CAN_ERROR_DETAIL_DLC == (1 + CAN_ERROR_DETAIL_CODES_PER_FRAME),
+    "Error-detail DLC must be seq(1) + channel codes.");
+static_assert(ENCODER_TOTAL_NUM <= 32, "errorBitmap only supports up to 32 channels.");
 
-// 仅把 0xFFFF 视为无效原始值。
-// 0x3FFF 是 14-bit 编码器的合法上限，不能误判为断连。
-static inline bool isInvalidEncoderRaw(uint16_t value)
+typedef struct {
+    uint8_t active;
+    uint8_t seq;
+    uint8_t frameMask;
+    uint8_t codes[ENCODER_TOTAL_NUM];
+    uint32_t firstFrameTimeMs;
+} ErrorDetailReassemblyState;
+
+static inline void resetErrorDetailReassembly(ErrorDetailReassemblyState* state)
 {
-    return value == 0xFFFF;
+    if (!state) {
+        return;
+    }
+    state->active = 0;
+    state->seq = 0;
+    state->frameMask = 0;
+    state->firstFrameTimeMs = 0;
+    memset(state->codes, 0, sizeof(state->codes));
 }
 
-// TWAI 驱动幂等初始化：只在首次进入任务时安装并启动一次。
+static uint32_t buildErrorBitmap(const uint8_t* codes)
+{
+    if (!codes) {
+        return 0;
+    }
+
+    uint32_t bitmap = 0;
+    for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
+    {
+        if (codes[i] != 0) {
+            bitmap |= (1UL << i);
+        }
+    }
+    return bitmap;
+}
+
 static void setupTwai()
 {
     static bool installed = false;
-    if (installed) return;
+    if (installed) {
+        return;
+    }
 
-    // 当前链路固定 1Mbps，接收过滤器放开，交由上层按 CAN ID 分拣。
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
         (gpio_num_t)TWAI_TX_PIN,
         (gpio_num_t)TWAI_RX_PIN,
-        TWAI_MODE_NORMAL
-    );
+        TWAI_MODE_NORMAL);
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_1MBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
-    // 提高 RX 队列深度，降低突发帧丢失概率。
     g_config.rx_queue_len = 64;
 
-    // 安装失败时保持现有行为：不额外重试，不改任务主循环结构。
     if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
         twai_start();
         installed = true;
@@ -46,75 +78,125 @@ void taskCanComm(void* parameter)
     TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;
     setupTwai();
 
-    // 持久化接收快照缓存：累计多帧后一次性发布到 canRxQueue。
-    static RemoteSensorData_t rxBuffer;
+    RemoteSensorData_t rxBuffer;
     memset(&rxBuffer, 0, sizeof(rxBuffer));
+
+    ErrorDetailReassemblyState errorState;
+    resetErrorDetailReassembly(&errorState);
 
     twai_message_t rxMsg;
     uint32_t lastRxTime = 0;
+    uint32_t lastCompleteErrorBatchTime = millis();
     RemoteCommand_t txCmd;
+
+    const uint8_t kAllErrorFramesMask = (uint8_t)((1U << CAN_ERROR_DETAIL_FRAME_COUNT) - 1U);
 
     for (;;)
     {
-        // 1) RX 循环（非阻塞）：每轮尽量清空 TWAI 接收队列，降低积压。
         while (twai_receive(&rxMsg, 0) == ESP_OK)
         {
-            lastRxTime = millis();
+            const uint32_t nowMs = millis();
+            lastRxTime = nowMs;
 
-            // 编码器帧：0x100 ~ CAN_ID_ENC_LAST，每帧携带 4 路编码器（每路 2 字节）。
             if (rxMsg.identifier >= CAN_ID_ENC_BASE && rxMsg.identifier <= CAN_ID_ENC_LAST)
             {
-                int frameIdx = rxMsg.identifier - CAN_ID_ENC_BASE;
-                int baseIdx = frameIdx * 4;
+                const int frameIdx = (int)(rxMsg.identifier - CAN_ID_ENC_BASE);
+                const int baseIdx = frameIdx * 4;
+                const int payloadLen = (int)rxMsg.data_length_code;
 
                 for (int i = 0; i < 4; i++)
                 {
-                    int realIdx = baseIdx + i;
-                    // 越界保护：最后一帧可能含填充位，超过 ENCODER_TOTAL_NUM 的通道直接忽略。
-                    if (realIdx < ENCODER_TOTAL_NUM)
-                    {
-                        // 协议按高字节在前组包。
-                        uint16_t val = ((uint16_t)rxMsg.data[i * 2] << 8) | rxMsg.data[i * 2 + 1];
-                        rxBuffer.encoderValues[realIdx] = val;
-                        rxBuffer.errorFlags[realIdx] = isInvalidEncoderRaw(val) ? 1 : 0;
+                    const int realIdx = baseIdx + i;
+                    const int dataOffset = i * 2;
+
+                    if (realIdx >= ENCODER_TOTAL_NUM) {
+                        continue;
                     }
+                    if ((dataOffset + 1) >= payloadLen) {
+                        break;
+                    }
+
+                    const uint16_t val = ((uint16_t)rxMsg.data[dataOffset] << 8) |
+                                         rxMsg.data[dataOffset + 1];
+                    rxBuffer.encoderValues[realIdx] = val;
                 }
 
-                // 以最后一帧到达作为“完整快照”触发点，避免消费者读到半包数据。
                 if (rxMsg.identifier == CAN_ID_ENC_LAST)
                 {
-                    rxBuffer.timestamp = millis();
+                    rxBuffer.timestamp = nowMs;
                     rxBuffer.isValid = true;
                     xQueueOverwrite(sharedData->canRxQueue, &rxBuffer);
                 }
             }
-            // 错误状态帧：0x1F0。
-            else if (rxMsg.identifier == CAN_ID_ERR_STATUS)
+            else if (rxMsg.identifier >= CAN_ID_ERROR_DETAIL_BASE &&
+                     rxMsg.identifier <= CAN_ID_ERROR_DETAIL_LAST)
             {
-                uint32_t bitmap = 0;
-                // DLC 防护：位图最多读取前 4 字节。
-                for (int i = 0; i < 4 && i < rxMsg.data_length_code; i++)
-                {
-                    bitmap |= ((uint32_t)rxMsg.data[i] << (i * 8));
+                if (rxMsg.data_length_code != CAN_ERROR_DETAIL_DLC) {
+                    continue;
                 }
-                rxBuffer.errorBitmap = bitmap;
 
-                // 余下字节按通道错误标志写入，且受 ENCODER_TOTAL_NUM 边界保护。
-                for (int i = 4; i < rxMsg.data_length_code && (i - 4) < ENCODER_TOTAL_NUM; i++)
+                const uint8_t seq = rxMsg.data[0];
+                const uint8_t frameIdx = (uint8_t)(rxMsg.identifier - CAN_ID_ERROR_DETAIL_BASE);
+
+                if (errorState.active)
                 {
-                    rxBuffer.errorFlags[i - 4] = rxMsg.data[i];
+                    const bool seqChanged = (seq != errorState.seq);
+                    const bool reassemblyTimedOut =
+                        ((uint32_t)(nowMs - errorState.firstFrameTimeMs) >
+                         CAN_ERROR_REASSEMBLY_TIMEOUT_MS);
+                    if (seqChanged || reassemblyTimedOut) {
+                        resetErrorDetailReassembly(&errorState);
+                    }
+                }
+
+                if (!errorState.active)
+                {
+                    errorState.active = 1;
+                    errorState.seq = seq;
+                    errorState.frameMask = 0;
+                    errorState.firstFrameTimeMs = nowMs;
+                    memset(errorState.codes, 0, sizeof(errorState.codes));
+                }
+
+                const int baseIdx = (int)frameIdx * CAN_ERROR_DETAIL_CODES_PER_FRAME;
+                for (int i = 0; i < CAN_ERROR_DETAIL_CODES_PER_FRAME; i++)
+                {
+                    const int channelIdx = baseIdx + i;
+                    if (channelIdx < ENCODER_TOTAL_NUM) {
+                        errorState.codes[channelIdx] = rxMsg.data[1 + i];
+                    }
+                }
+
+                errorState.frameMask |= (uint8_t)(1U << frameIdx);
+                if (errorState.frameMask == kAllErrorFramesMask)
+                {
+                    memcpy(rxBuffer.errorFlags, errorState.codes, sizeof(rxBuffer.errorFlags));
+                    rxBuffer.errorBitmap = buildErrorBitmap(rxBuffer.errorFlags);
+                    lastCompleteErrorBatchTime = nowMs;
+                    resetErrorDetailReassembly(&errorState);
                 }
             }
         }
 
-        // 2) 超时钩子（当前仅占位）：短时无帧不强制置 invalid，避免瞬时抖动引发状态闪断。
-        if (millis() - lastRxTime > 500 && rxBuffer.isValid)
+        const uint32_t nowMs = millis();
+        if (errorState.active &&
+            (uint32_t)(nowMs - errorState.firstFrameTimeMs) > CAN_ERROR_REASSEMBLY_TIMEOUT_MS)
         {
-            // 保持现有行为：暂不主动拉低有效位。
-            // rxBuffer.isValid = false;
+            resetErrorDetailReassembly(&errorState);
         }
 
-        // 3) TX 队列转发：从共享队列取命令并原样封装为 TWAI 帧发送。
+        if ((uint32_t)(nowMs - lastCompleteErrorBatchTime) > CAN_ERROR_TABLE_CLEAR_TIMEOUT_MS &&
+            rxBuffer.errorBitmap != 0)
+        {
+            memset(rxBuffer.errorFlags, 0, sizeof(rxBuffer.errorFlags));
+            rxBuffer.errorBitmap = 0;
+        }
+
+        if (millis() - lastRxTime > 500 && rxBuffer.isValid)
+        {
+            // Keep existing behavior: do not force isValid=false on short bus silence.
+        }
+
         if (xQueueReceive(sharedData->canTxQueue, &txCmd, 0) == pdTRUE)
         {
             twai_message_t txMsg;
@@ -125,7 +207,6 @@ void taskCanComm(void* parameter)
             twai_transmit(&txMsg, pdMS_TO_TICKS(10));
         }
 
-        // 固定任务节拍，平衡实时性与 CPU 占用。
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }

@@ -17,6 +17,7 @@ PACKET_TYPE_CALIB_ACK = 0x02
 PACKET_TYPE_SERVO_ANGLE = 0x03
 PACKET_TYPE_JOINT_DEBUG = 0x04
 PACKET_TYPE_SERVO_TELEM = 0x05
+PACKET_TYPE_PROTO_ACK = 0x06
 
 # Downstream commands (desktop -> device)
 CMD_CALIBRATE = 0xCA
@@ -26,6 +27,13 @@ CMD_STOP = 0xCD
 CMD_RESET = 0xCE
 CMD_CALIB_DATA = 0xCF
 CMD_MOTOR_POS = 0xD0
+CMD_SENSOR_STREAM_MODE = 0xD1
+
+SENSOR_STREAM_MODE_LEGACY_U16_WRAP = 0
+SENSOR_STREAM_MODE_SIGNED_I16 = 1
+
+PROTO_ACK_STATUS_OK = 0
+PROTO_ACK_STATUS_UNSUPPORTED_MODE = 1
 
 # Decoupled dimensions
 ENCODER_COUNT = 21
@@ -51,11 +59,20 @@ def parse_sensor_packet(payload: bytes) -> Tuple[List[int], List[bool]]:
         return angles, errors
 
     for i in range(ENCODER_COUNT):
-        val = (payload[i * 2] << 8) | payload[i * 2 + 1]
-        is_error = (val == ERROR_VAL_FLAG) or (val == DISCONNECT_SENTINEL)
+        raw_u16 = (payload[i * 2] << 8) | payload[i * 2 + 1]
+        is_error = (raw_u16 == DISCONNECT_SENTINEL)
         errors.append(is_error)
-        angles.append(0 if is_error else val)
+        if is_error:
+            angles.append(0)
+        else:
+            angles.append(struct.unpack(">h", payload[i * 2:i * 2 + 2])[0])
     return angles, errors
+
+
+def parse_proto_ack(payload: bytes) -> Optional[Tuple[int, int, int]]:
+    if len(payload) < 3:
+        return None
+    return payload[0], payload[1], payload[2]
 
 
 def parse_calib_ack(payload: bytes) -> Optional[int]:
@@ -187,3 +204,10 @@ def build_motor_pos_cmd(motor_pos_raw: List[int]) -> bytes:
         payload.append((raw >> 8) & 0xFF)
         payload.append(raw & 0xFF)
     return bytes([CMD_MOTOR_POS]) + bytes(payload)
+
+
+def build_stream_mode_cmd(mode: int) -> bytes:
+    mode_int = int(mode)
+    if mode_int not in (SENSOR_STREAM_MODE_LEGACY_U16_WRAP, SENSOR_STREAM_MODE_SIGNED_I16):
+        raise ValueError("unsupported sensor stream mode")
+    return bytes([CMD_SENSOR_STREAM_MODE, mode_int & 0xFF])

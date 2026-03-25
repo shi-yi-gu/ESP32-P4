@@ -8,7 +8,7 @@
 
 extern volatile uint8_t g_calibrationUIStatus;
 
-// 上行帧格式（下位机 -> 上位机）: [0xFE][LEN][TYPE][PAYLOAD][0xFF]
+// Upstream frame (device -> host): [0xFE][LEN][TYPE][PAYLOAD][0xFF]
 #define PROTOCOL_HEADER 0xFE
 #define PROTOCOL_TAIL 0xFF
 #define PACKET_TYPE_SENSOR 0x01
@@ -16,10 +16,11 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_SERVO_ANGLE 0x03
 #define PACKET_TYPE_JOINT1_DEBUG 0x04
 #define PACKET_TYPE_SERVO_TELEM 0x05
+#define PACKET_TYPE_PROTO_ACK 0x06
 
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
-// 下行指令（上位机 -> 下位机）
+// Downstream commands (host -> device)
 #define CMD_CALIBRATE 0xCA
 #define CMD_ANGLE_CTRL 0xCB
 #define CMD_START 0xCC
@@ -27,13 +28,23 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define CMD_RESET 0xCE
 #define CMD_CALIB_DATA 0xCF
 #define CMD_MOTOR_POS 0xD0
+#define CMD_SENSOR_STREAM_MODE 0xD1
+
+#define PROTO_ACK_STATUS_OK 0
+#define PROTO_ACK_STATUS_UNSUPPORTED_MODE 1
+
+#define SENSOR_STREAM_MODE_LEGACY_U16_WRAP 0
+#define SENSOR_STREAM_MODE_SIGNED_I16 1
 
 static const size_t kFloatPayloadBytes = ENCODER_TOTAL_NUM * sizeof(float);
 static const size_t kMotorPosPayloadBytes = SERVO_TOTAL_NUM * sizeof(uint16_t);
 static const size_t kCmdAngleFrameBytes = 1 + kFloatPayloadBytes;
 static const size_t kCmdCalibDataFrameBytes = 1 + kFloatPayloadBytes;
 static const size_t kCmdMotorPosFrameBytes = 1 + kMotorPosPayloadBytes;
+static const size_t kCmdSensorStreamModeFrameBytes = 2;
 static const size_t kSerialRxBufferSize = 512;
+static const int32_t kEncoderModulo = 16384;
+static uint8_t g_sensorStreamMode = SENSOR_STREAM_MODE_SIGNED_I16;
 
 static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
 {
@@ -43,6 +54,44 @@ static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
     buffer[(*idx)++] = (uint8_t)((bits >> 16) & 0xFF);
     buffer[(*idx)++] = (uint8_t)((bits >> 8) & 0xFF);
     buffer[(*idx)++] = (uint8_t)(bits & 0xFF);
+}
+
+static int16_t encodeMappedAngleForWire(int16_t mappedCount, bool channelValid)
+{
+    if (!channelValid) {
+        return PROTOCOL_DISCONNECT_SENTINEL;
+    }
+
+    int16_t wireValue = mappedCount;
+    if (wireValue == PROTOCOL_DISCONNECT_SENTINEL) {
+        wireValue = (int16_t)0x7FFE;
+    }
+
+    if (g_sensorStreamMode == SENSOR_STREAM_MODE_LEGACY_U16_WRAP) {
+        int32_t wrapped = (int32_t)wireValue % kEncoderModulo;
+        if (wrapped < 0) {
+            wrapped += kEncoderModulo;
+        }
+        wireValue = (int16_t)wrapped;
+    }
+
+    return wireValue;
+}
+
+static void sendProtoAckPacket(uint8_t cmd, uint8_t appliedMode, uint8_t status)
+{
+    uint8_t buffer[8];
+    size_t idx = 0;
+
+    buffer[idx++] = PROTOCOL_HEADER;
+    buffer[idx++] = 0x00;
+    buffer[idx++] = PACKET_TYPE_PROTO_ACK;
+    buffer[idx++] = cmd;
+    buffer[idx++] = appliedMode;
+    buffer[idx++] = status;
+    buffer[idx++] = PROTOCOL_TAIL;
+    buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
+    Serial.write(buffer, idx);
 }
 
 static void sendDataPacket(ServoStatus_t* pServo,
@@ -57,7 +106,7 @@ static void sendDataPacket(ServoStatus_t* pServo,
     size_t idx = 0;
 
     buffer[idx++] = PROTOCOL_HEADER;
-    buffer[idx++] = 0x00; // LEN 占位，尾部统一回填
+    buffer[idx++] = 0x00; // LEN placeholder, filled after payload is serialized.
 
     if (g_calibrationUIStatus != 0)
     {
@@ -69,14 +118,9 @@ static void sendDataPacket(ServoStatus_t* pServo,
         buffer[idx++] = PACKET_TYPE_SENSOR;
         for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
         {
-            int16_t val = PROTOCOL_DISCONNECT_SENTINEL;
             const bool channelValid = pMapped->isValid && (pMapped->validFlags[i] != 0);
-            if (channelValid) {
-                val = pMapped->angleValues[i];
-                if (val == PROTOCOL_DISCONNECT_SENTINEL) {
-                    val = (int16_t)0x7FFE;
-                }
-            }
+            const int16_t mappedCount = channelValid ? pMapped->angleValues[i] : 0;
+            const int16_t val = encodeMappedAngleForWire(mappedCount, channelValid);
             buffer[idx++] = (uint8_t)(((uint16_t)val >> 8) & 0xFF);
             buffer[idx++] = (uint8_t)((uint16_t)val & 0xFF);
         }
@@ -265,6 +309,8 @@ static size_t getCommandFrameLength(uint8_t cmd)
             return kCmdCalibDataFrameBytes;
         case CMD_MOTOR_POS:
             return kCmdMotorPosFrameBytes;
+        case CMD_SENSOR_STREAM_MODE:
+            return kCmdSensorStreamModeFrameBytes;
         default:
             return 0;
     }
@@ -297,7 +343,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_START)
     {
-        // 启动后不强制切模式，只恢复使能与故障计数。
+        // START only restores control enable and fault counter.
         sharedData->control_enabled = 1;
         sharedData->joint16_dual_feedback_fault = 0;
         return;
@@ -311,7 +357,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_RESET)
     {
-        // RESET: 回到角控模式，并清空角控/直控目标缓存。
+        // RESET returns to joint control and clears command caches.
         clearTargetAngles(sharedData);
         clearMotorTargets(sharedData);
         sharedData->control_enabled = 0;
@@ -322,7 +368,6 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_ANGLE_CTRL)
     {
-        // 角控命令：严格按 21 路 float 小端解析。
         float parsedAngles[ENCODER_TOTAL_NUM] = {0.0f};
         if (parseFloatArrayLittleEndian(frame + 1, frameLen - 1, parsedAngles, ENCODER_TOTAL_NUM)) {
             applyTargetAngles(sharedData, parsedAngles, ENCODER_TOTAL_NUM);
@@ -333,7 +378,6 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_CALIB_DATA)
     {
-        // 标定零点数据：按 21 路写入缓存。
         float zeroRaw[ENCODER_TOTAL_NUM] = {0.0f};
         if (parseFloatArrayLittleEndian(frame + 1, frameLen - 1, zeroRaw, ENCODER_TOTAL_NUM)) {
             cacheCalibZeroRaw(sharedData, zeroRaw, ENCODER_TOTAL_NUM);
@@ -343,12 +387,29 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_MOTOR_POS)
     {
-        // 直控命令：严格按 22 路 uint16 大端解析并切到直控模式。
         int32_t motorTargets[SERVO_TOTAL_NUM] = {0};
         if (parseInt16ArrayBigEndian(frame + 1, frameLen - 1, motorTargets, SERVO_TOTAL_NUM)) {
             applyMotorTargets(sharedData, motorTargets, SERVO_TOTAL_NUM);
             sharedData->control_mode = CONTROL_MODE_DIRECT_MOTOR;
         }
+        return;
+    }
+
+    if (cmd == CMD_SENSOR_STREAM_MODE)
+    {
+        uint8_t status = PROTO_ACK_STATUS_OK;
+        if (frameLen < kCmdSensorStreamModeFrameBytes) {
+            status = PROTO_ACK_STATUS_UNSUPPORTED_MODE;
+        } else {
+            const uint8_t requestedMode = frame[1];
+            if (requestedMode == SENSOR_STREAM_MODE_LEGACY_U16_WRAP ||
+                requestedMode == SENSOR_STREAM_MODE_SIGNED_I16) {
+                g_sensorStreamMode = requestedMode;
+            } else {
+                status = PROTO_ACK_STATUS_UNSUPPORTED_MODE;
+            }
+        }
+        sendProtoAckPacket(CMD_SENSOR_STREAM_MODE, g_sensorStreamMode, status);
     }
 }
 

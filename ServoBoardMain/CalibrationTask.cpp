@@ -62,10 +62,10 @@ JointDualServoConstraint g_joint16DualServoConstraint = {
 // 约定：值为 0 表示该关节未提供手工标定数据。
 static const uint8_t kTestJointCount = ENCODER_TOTAL_NUM;
 static const int32_t kManualEncoderMax[kTestJointCount] = {
-    0, 0, 0, 0,
-    11443, 10454, 7865, 1830,
-    0, 0, 0, 0,
-    0, 0, 0, 0,
+    12037, 12636, 9174, 12822,
+    12440, 9738, 3500, 1232,
+    3339, 2425, 12643, 6464,
+    8930, 1353, 8687, 12757,
     0, 0, 0, 0, 0
 };
 
@@ -328,5 +328,4 @@ void taskServoCalibration(void* parameter) {
     g_calibrationUIStatus = CALIB_STATUS_IDLE;
     vTaskDelete(NULL);
 }
-
 

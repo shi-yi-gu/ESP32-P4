@@ -21,15 +21,20 @@ from protocol import (
     build_calib_data_cmd,
     build_calibrate_cmd,
     build_motor_pos_cmd,
+    build_stream_mode_cmd,
     build_reset_cmd,
     build_start_cmd,
     build_stop_cmd,
+    CMD_SENSOR_STREAM_MODE,
     parse_calib_ack,
     parse_frame,
     parse_joint_debug_packet,
+    parse_proto_ack,
     parse_sensor_packet,
     parse_servo_angle_packet,
     parse_servo_telem_packet,
+    PROTO_ACK_STATUS_OK,
+    SENSOR_STREAM_MODE_SIGNED_I16,
 )
 
 # String command / HandModel / tuple command.
@@ -97,6 +102,11 @@ class LowerComputerComm:
         self._tx_thread: Optional[threading.Thread] = None
         self._rx_buffer = bytearray()
         self._last_model: Optional[HandModel] = None
+        self._stream_mode_requested = SENSOR_STREAM_MODE_SIGNED_I16
+        self._stream_mode_applied: Optional[int] = None
+        self._stream_mode_ack_pending = False
+        self._stream_mode_ack_deadline = 0.0
+        self._stream_mode_ack_warned = False
 
         if self.port:
             if not is_valid_port(self.port):
@@ -117,6 +127,11 @@ class LowerComputerComm:
             self._tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
             self._rx_thread.start()
             self._tx_thread.start()
+            self._stream_mode_applied = None
+            self._stream_mode_ack_pending = True
+            self._stream_mode_ack_warned = False
+            self._stream_mode_ack_deadline = time.time() + 2.0
+            self.send_command(("stream_mode", self._stream_mode_requested))
             return True
         except Exception as exc:
             print(f"连接失败: {exc}")
@@ -143,8 +158,16 @@ class LowerComputerComm:
                             pass
                 else:
                     time.sleep(RX_POLL_SLEEP)
+                self._check_stream_mode_ack_timeout()
             except Exception as exc:
                 print(f"RX error: {exc}")
+
+    def _check_stream_mode_ack_timeout(self):
+        if self._stream_mode_ack_pending and not self._stream_mode_ack_warned:
+            if time.time() >= self._stream_mode_ack_deadline:
+                print("Protocol warning: no stream-mode ACK from firmware; continue with current decoding.")
+                self._stream_mode_ack_warned = True
+                self._stream_mode_ack_pending = False
 
     def _process_packets(self, packets: List[tuple]) -> Optional[HandModel]:
         model = HandModel()
@@ -221,6 +244,20 @@ class LowerComputerComm:
                         model.joint_debug_loop2_output[joint_index] = float(loop2_out)
                     emitted = True
 
+            elif pkt_type == 0x06:
+                parsed = parse_proto_ack(payload)
+                if parsed is not None:
+                    ack_cmd, applied_mode, status = parsed
+                    if ack_cmd == CMD_SENSOR_STREAM_MODE:
+                        self._stream_mode_applied = int(applied_mode)
+                        self._stream_mode_ack_pending = False
+                        if status != PROTO_ACK_STATUS_OK and not self._stream_mode_ack_warned:
+                            print(
+                                f"Protocol warning: stream-mode rejected "
+                                f"(status={status}, applied={applied_mode})."
+                            )
+                            self._stream_mode_ack_warned = True
+
         self._last_model = model
         return model if emitted else None
 
@@ -249,6 +286,8 @@ class LowerComputerComm:
             return build_calib_data_cmd(cmd[1])
         if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "motor_pos":
             return build_motor_pos_cmd(cmd[1])
+        if isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "stream_mode":
+            return build_stream_mode_cmd(cmd[1])
         if cmd == "start":
             return build_start_cmd()
         if cmd == "stop":

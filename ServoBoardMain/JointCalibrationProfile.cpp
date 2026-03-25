@@ -34,45 +34,114 @@ static const JointCalibrationConfig kDefaultJointCalib = {
 
 // Joint 0~3：实机专用调参项（可按实测更新）。
 static const JointCalibrationConfig kJoint0Calib = {
-    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    degToEnc(70.0f), degToEnc(3.0f), degToEnc(3.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint1Calib = {
-    degToEnc(105.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(40.0f),
+    degToEnc(80.0f), degToEnc(3.0f), degToEnc(3.0f), degToEnc(40.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint2Calib = {
-    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    degToEnc(95.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint3Calib = {
-    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
+    degToEnc(100.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(50.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 // Joint 4~7：实机专用调参项（可按实测更新）。
 static const JointCalibrationConfig kJoint4Calib = {
-    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    degToEnc(70.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint5Calib = {
-    degToEnc(105.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(40.0f),
+    degToEnc(80.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(40.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint6Calib = {
-    degToEnc(100.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(45.0f),
+    degToEnc(95.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
 static const JointCalibrationConfig kJoint7Calib = {
-    degToEnc(90.0f), degToEnc(2.0f), degToEnc(2.0f), degToEnc(50.0f),
+    degToEnc(100.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(50.0f),
     180, 10, 150, 10, 20, 5000
 };
+
+// Joint 8~11：实机专用调参项（可按实测更新）。
+static const JointCalibrationConfig kJoint8Calib = {
+    degToEnc(70.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint9Calib = {
+    degToEnc(80.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(40.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint10Calib = {
+    degToEnc(95.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint11Calib = {
+    degToEnc(100.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(50.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+// Joint 12~15：实机专用调参项（可按实测更新）。
+static const JointCalibrationConfig kJoint12Calib = {
+    degToEnc(70.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint13Calib = {
+    degToEnc(80.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(40.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint14Calib = {
+    degToEnc(95.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint15Calib = {
+    degToEnc(100.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(50.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+// Joint 16~20：实机专用调参项（可按实测更新）。
+static const JointCalibrationConfig kJoint16Calib = {
+    degToEnc(70.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint16Calib = {
+    degToEnc(70.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint17Calib = {
+    degToEnc(80.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(40.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint18Calib = {
+    degToEnc(95.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(45.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
+static const JointCalibrationConfig kJoint19Calib = {
+    degToEnc(100.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(50.0f),
+    180, 10, 150, 10, 20, 5000
+};
+
 
 // 标定配置总表：
 // - 下标严格对应 jointIndex；

@@ -37,7 +37,9 @@ typedef struct {
 
 typedef struct {
     uint16_t encoderValues[ENCODER_TOTAL_NUM];
+    // 1-byte error type per channel from CAN error-detail frames (0x00 means OK).
     uint8_t errorFlags[ENCODER_TOTAL_NUM];
+    // Derived bitmap: bit i is set when errorFlags[i] != 0 (kept for quick checks).
     uint32_t errorBitmap;
     uint32_t timestamp;
     bool isValid;

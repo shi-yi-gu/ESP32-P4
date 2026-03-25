@@ -39,9 +39,36 @@ PACKET_TYPE_CALIB_ACK = 0x02
 PACKET_TYPE_SERVO_ANGLE = 0x03
 PACKET_TYPE_SERVO_TELEM = 0x05
 PACKET_TYPE_JOINT1_DEBUG = 0x04
+PACKET_TYPE_PROTO_ACK = 0x06
 
 CMD_CALIBRATE = b"\xCA"
+CMD_SENSOR_STREAM_MODE = 0xD1
 DISCONNECT_SENTINEL = 0x7FFF
+
+SENSOR_STREAM_MODE_LEGACY_U16_WRAP = 0
+SENSOR_STREAM_MODE_SIGNED_I16 = 1
+PROTO_ACK_STATUS_OK = 0
+
+
+def parse_stream_mode_request(argv: List[str]) -> Optional[int]:
+    requested: Optional[int] = SENSOR_STREAM_MODE_SIGNED_I16
+    for arg in argv:
+        if not arg.startswith("--stream-mode="):
+            continue
+        mode_text = arg.split("=", 1)[1].strip().lower()
+        if mode_text == "signed":
+            requested = SENSOR_STREAM_MODE_SIGNED_I16
+        elif mode_text == "legacy":
+            requested = SENSOR_STREAM_MODE_LEGACY_U16_WRAP
+        elif mode_text == "off":
+            requested = None
+        else:
+            print(f"Unknown --stream-mode value '{mode_text}', fallback to 'signed'.")
+            requested = SENSOR_STREAM_MODE_SIGNED_I16
+    return requested
+
+
+REQUESTED_STREAM_MODE = parse_stream_mode_request(sys.argv[1:])
 
 PLOT_MAX_POINTS = 1000
 PLOT_WINDOW_SEC = 10.0
@@ -163,6 +190,24 @@ def process_calib_ack_packet(payload: bytes) -> None:
             state.calib_timestamp = time.time()
 
 
+def process_proto_ack_packet(payload: bytes) -> None:
+    if len(payload) < 3:
+        return
+    ack_cmd, applied_mode, status = payload[0], payload[1], payload[2]
+    if ack_cmd != CMD_SENSOR_STREAM_MODE:
+        return
+    if applied_mode == SENSOR_STREAM_MODE_SIGNED_I16:
+        mode_name = "signed"
+    elif applied_mode == SENSOR_STREAM_MODE_LEGACY_U16_WRAP:
+        mode_name = "legacy"
+    else:
+        mode_name = str(applied_mode)
+    if status == PROTO_ACK_STATUS_OK:
+        print(f"\nProtocol ACK: sensor stream mode = {mode_name}")
+    else:
+        print(f"\nProtocol ACK warning: request rejected, applied={mode_name}, status={status}")
+
+
 def process_servo_angle_packet(payload: bytes) -> None:
     expected_len = ENCODER_COUNT * 4 + ENCODER_COUNT
     if len(payload) != expected_len:
@@ -265,6 +310,8 @@ def parse_stream(buffer: bytearray) -> bytearray:
             process_servo_telem_packet(payload)
         elif packet_type == PACKET_TYPE_JOINT1_DEBUG:
             process_joint1_debug_packet(payload)
+        elif packet_type == PACKET_TYPE_PROTO_ACK:
+            process_proto_ack_packet(payload)
 
     return buffer
 
@@ -275,6 +322,9 @@ def serial_thread(port_name: str) -> None:
         with state.lock:
             state.ser = ser
             state.connected_port = port_name
+
+        if REQUESTED_STREAM_MODE is not None:
+            ser.write(bytes([CMD_SENSOR_STREAM_MODE, REQUESTED_STREAM_MODE & 0xFF]))
 
         buffer = bytearray()
         while state.running:
