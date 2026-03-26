@@ -167,6 +167,10 @@ static void sendDataPacket(ServoStatus_t* pServo,
         appendFloatBigEndian(buffer, &idx, pJointDebug->loop1Output);
         appendFloatBigEndian(buffer, &idx, pJointDebug->loop2Actual);
         appendFloatBigEndian(buffer, &idx, pJointDebug->loop2Output);
+        buffer[idx++] = pJointDebug->cmdValid;
+        const uint16_t cmdPosRaw = (uint16_t)pJointDebug->cmdTargetPos;
+        buffer[idx++] = (uint8_t)((cmdPosRaw >> 8) & 0xFF);
+        buffer[idx++] = (uint8_t)(cmdPosRaw & 0xFF);
     }
     else
     {

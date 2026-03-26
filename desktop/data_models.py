@@ -120,6 +120,8 @@ class HandModel:
     joint_debug_loop1_output: List[float] = field(default_factory=lambda: [0.0] * ENCODER_COUNT)
     joint_debug_loop2_actual: List[float] = field(default_factory=lambda: [0.0] * ENCODER_COUNT)
     joint_debug_loop2_output: List[float] = field(default_factory=lambda: [0.0] * ENCODER_COUNT)
+    joint_debug_cmd_valid: List[bool] = field(default_factory=lambda: [False] * ENCODER_COUNT)
+    joint_debug_cmd_target_pos: List[int] = field(default_factory=lambda: [0] * ENCODER_COUNT)
 
     @property
     def angles(self) -> List[float]:
@@ -173,6 +175,8 @@ class HandModel:
         self.joint_debug_loop1_output = list(other.joint_debug_loop1_output)
         self.joint_debug_loop2_actual = list(other.joint_debug_loop2_actual)
         self.joint_debug_loop2_output = list(other.joint_debug_loop2_output)
+        self.joint_debug_cmd_valid = list(other.joint_debug_cmd_valid)
+        self.joint_debug_cmd_target_pos = list(other.joint_debug_cmd_target_pos)
         # 复制数据有效性标志
         self.has_sensor_data = bool(other.has_sensor_data)
         self.has_servo_angle_data = bool(other.has_servo_angle_data)

@@ -297,6 +297,8 @@ void taskSolver(void* parameter)
         bool busWritePending[NUM_BUSES] = {false};
         uint8_t readIds[NUM_BUSES][MAX_SERVOS_PER_BUS] = {0};
         uint8_t readCounts[NUM_BUSES] = {0};
+        int16_t jointCmdPos[ENCODER_TOTAL_NUM] = {0};
+        uint8_t jointCmdValid[ENCODER_TOTAL_NUM] = {0};
 
         // 每周期读取全部舵机通道，保证 22 通道上报完整可见。
         for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
@@ -482,30 +484,6 @@ void taskSolver(void* parameter)
 
         angleSolver.compute(localTargets, magAngles, absolutePosition, outPulses);
 
-        if (sharedData->jointDebugQueue)
-        {
-            for (uint8_t di = 0; di < kDebugJointCount; di++)
-            {
-                const uint8_t jointIndex = kDebugJointIndices[di];
-                JointDebugData_t debugData;
-                memset(&debugData, 0, sizeof(debugData));
-                debugData.jointIndex = jointIndex;
-                debugData.timestamp = millis();
-                debugData.valid = (mappedData.validFlags[jointIndex] != 0) ? 1 : 0;
-                debugData.targetDeg = localTargets[jointIndex];
-                debugData.magActualDeg = magAngles[jointIndex];
-                debugData.loop1Output = angleSolver.getPidOutput(jointIndex, 0);
-                debugData.loop2Actual = (float)absolutePosition[jointIndex];
-                debugData.loop2Output = angleSolver.getPidOutput(jointIndex, 1);
-
-                if (xQueueSend(sharedData->jointDebugQueue, &debugData, 0) != pdTRUE) {
-                    JointDebugData_t drop;
-                    xQueueReceive(sharedData->jointDebugQueue, &drop, 0);
-                    xQueueSend(sharedData->jointDebugQueue, &debugData, 0);
-                }
-            }
-        }
-
         if (kLocalDebugJointControl && sharedData->control_mode != CONTROL_MODE_JOINT) {
             sharedData->control_mode = CONTROL_MODE_JOINT;
         }
@@ -561,6 +539,8 @@ void taskSolver(void* parameter)
                         const int16_t holdPos = clampServoPos(absolutePosition[jointIndex]);
                         pBus->setTarget(id, holdPos, 1000, 50);
                         busWritePending[bus] = true;
+                        jointCmdPos[jointIndex] = holdPos;
+                        jointCmdValid[jointIndex] = 1;
                     }
 
                     if (jointIndex == kJoint16Index) {
@@ -578,6 +558,8 @@ void taskSolver(void* parameter)
                 const int16_t targetPos = clampServoPos(outPulses[jointIndex]);
                 pBus->setTarget(id, targetPos, 1000, 50);
                 busWritePending[bus] = true;
+                jointCmdPos[jointIndex] = targetPos;
+                jointCmdValid[jointIndex] = 1;
 
                 if (jointIndex == kJoint16Index) {
                     ServoBusManager* pSecBus = getBusByIndex(joint16SecondaryMotor.busIndex);
@@ -587,6 +569,32 @@ void taskSolver(void* parameter)
                         pSecBus->setTarget(joint16SecondaryMotor.servoID, clampServoPos(secTarget), 1000, 50);
                         busWritePending[joint16SecondaryMotor.busIndex] = true;
                     }
+                }
+            }
+        }
+
+        if (sharedData->jointDebugQueue)
+        {
+            for (uint8_t di = 0; di < kDebugJointCount; di++)
+            {
+                const uint8_t jointIndex = kDebugJointIndices[di];
+                JointDebugData_t debugData;
+                memset(&debugData, 0, sizeof(debugData));
+                debugData.jointIndex = jointIndex;
+                debugData.timestamp = millis();
+                debugData.valid = (mappedData.validFlags[jointIndex] != 0) ? 1 : 0;
+                debugData.targetDeg = localTargets[jointIndex];
+                debugData.magActualDeg = magAngles[jointIndex];
+                debugData.loop1Output = angleSolver.getPidOutput(jointIndex, 0);
+                debugData.loop2Actual = (float)absolutePosition[jointIndex];
+                debugData.loop2Output = angleSolver.getPidOutput(jointIndex, 1);
+                debugData.cmdTargetPos = jointCmdPos[jointIndex];
+                debugData.cmdValid = jointCmdValid[jointIndex];
+
+                if (xQueueSend(sharedData->jointDebugQueue, &debugData, 0) != pdTRUE) {
+                    JointDebugData_t drop;
+                    xQueueReceive(sharedData->jointDebugQueue, &drop, 0);
+                    xQueueSend(sharedData->jointDebugQueue, &debugData, 0);
                 }
             }
         }

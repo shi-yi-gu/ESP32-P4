@@ -123,14 +123,33 @@ def parse_servo_telem_packet(
 
 def parse_joint_debug_packet(
     payload: bytes,
-) -> Optional[Tuple[int, bool, float, float, float, float, float]]:
-    expected_len = 2 + 5 * 4
-    if len(payload) != expected_len:
+) -> Optional[Tuple[int, bool, float, float, float, float, float, bool, int]]:
+    legacy_len = 2 + 5 * 4
+    extended_len = legacy_len + 1 + 2
+    if len(payload) not in (legacy_len, extended_len):
         return None
+
     joint_index, valid, target_deg, actual_deg, loop1_out, loop2_act, loop2_out = struct.unpack(
-        ">BBfffff", payload
+        ">BBfffff", payload[:legacy_len]
     )
-    return joint_index, valid == 1, target_deg, actual_deg, loop1_out, loop2_act, loop2_out
+    if len(payload) == extended_len:
+        cmd_valid = (payload[legacy_len] == 1)
+        cmd_target_pos = struct.unpack(">h", payload[legacy_len + 1:legacy_len + 3])[0]
+    else:
+        cmd_valid = False
+        cmd_target_pos = 0
+
+    return (
+        joint_index,
+        valid == 1,
+        target_deg,
+        actual_deg,
+        loop1_out,
+        loop2_act,
+        loop2_out,
+        cmd_valid,
+        cmd_target_pos,
+    )
 
 
 def parse_frame(data: bytes) -> Tuple[List[Tuple[int, bytes]], bytearray]:

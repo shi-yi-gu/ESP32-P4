@@ -234,7 +234,17 @@ class LowerComputerComm:
             elif pkt_type == 0x04:
                 parsed = parse_joint_debug_packet(payload)
                 if parsed is not None:
-                    joint_index, valid, target_deg, actual_deg, loop1_out, loop2_act, loop2_out = parsed
+                    (
+                        joint_index,
+                        valid,
+                        target_deg,
+                        actual_deg,
+                        loop1_out,
+                        loop2_act,
+                        loop2_out,
+                        cmd_valid,
+                        cmd_target_pos,
+                    ) = parsed
                     if 0 <= joint_index < ENCODER_COUNT:
                         model.joint_debug_valid[joint_index] = valid
                         model.joint_debug_target_deg[joint_index] = float(target_deg)
@@ -242,6 +252,8 @@ class LowerComputerComm:
                         model.joint_debug_loop1_output[joint_index] = float(loop1_out)
                         model.joint_debug_loop2_actual[joint_index] = float(loop2_act)
                         model.joint_debug_loop2_output[joint_index] = float(loop2_out)
+                        model.joint_debug_cmd_valid[joint_index] = bool(cmd_valid)
+                        model.joint_debug_cmd_target_pos[joint_index] = int(cmd_target_pos)
                     emitted = True
 
             elif pkt_type == 0x06:
