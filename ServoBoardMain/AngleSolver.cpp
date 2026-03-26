@@ -100,6 +100,7 @@ static const uint32_t kDebugTargetMoveMs = 5000;
 static const bool kDebugUseSineTarget = true;
 
 static const uint32_t kCanBusOfflineTimeoutMs = 300;
+static const uint16_t kEncoderDisconnectRaw = 0xFFFF;
 
 static int16_t clampMappedCountForProtocol(int32_t value)
 {
@@ -409,7 +410,7 @@ void taskSolver(void* parameter)
         {
             for (int i = 0; i < ENCODER_TOTAL_NUM; i++)
             {
-                if (sensorData.errorFlags[i] != 0) {
+                if (sensorData.encoderValues[i] == kEncoderDisconnectRaw) {
                     mappedData.validFlags[i] = 0;
                     magAngles[i] = 0.0f;
                     continue;
@@ -434,10 +435,6 @@ void taskSolver(void* parameter)
                 mappedData.validFlags[i] = 1;
                 magAngles[i] = convertEncoderCountToDeg(mappedCount);
             }
-        }
-
-        if (joint16DualFault) {
-            mappedData.validFlags[kJoint16Index] = 0;
         }
 
         if (sharedData->mappedAngleQueue) {
