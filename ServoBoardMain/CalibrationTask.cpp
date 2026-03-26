@@ -66,7 +66,7 @@ static const int32_t kManualEncoderMax[kTestJointCount] = {
     12440, 9738, 3500, 1232,
     3339, 2425, 12643, 6464,
     8930, 1353, 8687, 12757,
-    0, 0, 0, 0, 0
+    0, 6542, 6480, 10115, 6535
 };
 
 static const int32_t kEncoderModulo = 16384;

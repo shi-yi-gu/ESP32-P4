@@ -122,22 +122,22 @@ static const JointCalibrationConfig kJoint16Calib = {
     180, 10, 150, 10, 20, 5000
 };
 
-static const JointCalibrationConfig kJoint16Calib = {
+static const JointCalibrationConfig kJoint17Calib = {
     degToEnc(70.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
-static const JointCalibrationConfig kJoint17Calib = {
+static const JointCalibrationConfig kJoint18Calib = {
     degToEnc(80.0f), degToEnc(3.0f), degToEnc(2.0f), degToEnc(40.0f),
     180, 10, 150, 10, 20, 5000
 };
 
-static const JointCalibrationConfig kJoint18Calib = {
+static const JointCalibrationConfig kJoint19Calib = {
     degToEnc(95.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(45.0f),
     180, 10, 150, 10, 20, 5000
 };
 
-static const JointCalibrationConfig kJoint19Calib = {
+static const JointCalibrationConfig kJoint20Calib = {
     degToEnc(100.0f), degToEnc(5.0f), degToEnc(2.0f), degToEnc(50.0f),
     180, 10, 150, 10, 20, 5000
 };

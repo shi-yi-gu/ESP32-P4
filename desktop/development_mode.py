@@ -224,7 +224,7 @@ def _print_console(controller: HandController, connected_port: str, plot_status:
             f"loop1={float(jd_l1[idx]):8.3f} loop2a={float(jd_l2a[idx]):8.3f} loop2o={float(jd_l2o[idx]):8.3f}"
         )
     print("-" * 88)
-    print("Controls: 'c' send calibration command, 'q' quit.")
+    print("Controls: 's' start, 'x' stop, 'r' reset, 'c' calibrate, 'q' quit.")
     print(f"Calibration: {_render_calib_status(str(snap['calib_status']))}")
 
 
@@ -308,6 +308,8 @@ def run_development_mode(*, no_plot: bool = False) -> None:
 
     print(f"Connecting to {selected_port} ...")
     controller.set_pid_control(False)
+    # Keep behavior aligned with GUI monitor: enable lower controller on enter.
+    controller.start()
 
     plotter = None
     plot_status = "DISABLED (--no-plot)" if no_plot else "DISABLED"
@@ -329,6 +331,12 @@ def run_development_mode(*, no_plot: bool = False) -> None:
                 key = key_reader.read_key()
                 if key == "q":
                     break
+                if key == "s":
+                    controller.start()
+                if key == "x":
+                    controller.stop()
+                if key == "r":
+                    controller.reset()
                 if key == "c":
                     if controller.comm and controller.comm.serial and controller.comm.serial.is_open:
                         controller.comm.send_command("calibrate")

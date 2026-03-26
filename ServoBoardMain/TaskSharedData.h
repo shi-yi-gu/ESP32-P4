@@ -90,9 +90,11 @@ typedef struct {
     float loop1Output;
     float loop2Actual;
     float loop2Output;
+    int16_t cmdTargetPos;
     uint32_t timestamp;
     uint8_t jointIndex;
     uint8_t valid;
+    uint8_t cmdValid;
 } JointDebugData_t;
 
 typedef struct {

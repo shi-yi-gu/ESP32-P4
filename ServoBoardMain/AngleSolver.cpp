@@ -79,7 +79,7 @@ static const uint8_t kClosedLoopJointIndices[] = {4, 5, 6, 7, 16};
 static const uint8_t kClosedLoopJointCount =
     (uint8_t)(sizeof(kClosedLoopJointIndices) / sizeof(kClosedLoopJointIndices[0]));
 
-static const uint8_t kDebugJointIndices[] = {4, 5, 6, 7, 16};
+static const uint8_t kDebugJointIndices[] = {4, 5, 6, 7};
 static const uint8_t kDebugJointCount =
     (uint8_t)(sizeof(kDebugJointIndices) / sizeof(kDebugJointIndices[0]));
 
@@ -93,11 +93,17 @@ static const int32_t kJoint16TensionBias = 0;
 static const int32_t kJoint16DiffThresholdCounts = 180;
 static const uint8_t kJoint16DiffFaultCycles = 3;
 
-static const float kDebugTargetMinDeg = 40.0f;
+// Firmware-only debug mode:
+// - ignores host START gate for closed-loop joints,
+// - enforces JOINT mode,
+// - drives J04~J07 using built-in target generator.
+static const bool kLocalDebugJointControl = true;
+static const float kDebugTargetMinDeg = 10.0f;
 static const float kDebugTargetMaxDeg = 40.0f;
 static const uint32_t kDebugTargetHoldMs = 2500;
 static const uint32_t kDebugTargetMoveMs = 5000;
 static const bool kDebugUseSineTarget = true;
+static const float kDebugFixedTargetDeg = 20.0f;
 
 static const uint32_t kCanBusOfflineTimeoutMs = 300;
 static const uint16_t kEncoderDisconnectRaw = 0xFFFF;
@@ -252,6 +258,17 @@ static bool addReadTarget(uint8_t busIds[NUM_BUSES][MAX_SERVOS_PER_BUS],
     }
     busIds[bus][busCounts[bus]++] = id;
     return true;
+}
+
+static bool isDebugJoint(uint8_t jointIndex)
+{
+    for (uint8_t i = 0; i < kDebugJointCount; i++)
+    {
+        if (kDebugJointIndices[i] == jointIndex) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void taskSolver(void* parameter)
@@ -446,17 +463,20 @@ void taskSolver(void* parameter)
             memcpy(localTargets, sharedData->targetAngles, sizeof(localTargets));
             xSemaphoreGive(sharedData->targetAnglesMutex);
         }
-        const bool controlEnabled = (sharedData->control_enabled != 0);
+        const bool hostControlEnabled = (sharedData->control_enabled != 0);
+        const bool controlEnabled = hostControlEnabled || kLocalDebugJointControl;
 
-        if (controlEnabled && kDebugUseSineTarget) {
+        if (controlEnabled && kLocalDebugJointControl) {
             for (uint8_t di = 0; di < kDebugJointCount; di++) {
                 const uint8_t jointIndex = kDebugJointIndices[di];
-                localTargets[jointIndex] = computeSineTarget(
-                    kDebugTargetMinDeg,
-                    kDebugTargetMaxDeg,
-                    kDebugTargetHoldMs,
-                    kDebugTargetMoveMs,
-                    millis());
+                localTargets[jointIndex] = kDebugUseSineTarget
+                    ? computeSineTarget(
+                        kDebugTargetMinDeg,
+                        kDebugTargetMaxDeg,
+                        kDebugTargetHoldMs,
+                        kDebugTargetMoveMs,
+                        millis())
+                    : kDebugFixedTargetDeg;
             }
         }
 
@@ -484,6 +504,10 @@ void taskSolver(void* parameter)
                     xQueueSend(sharedData->jointDebugQueue, &debugData, 0);
                 }
             }
+        }
+
+        if (kLocalDebugJointControl && sharedData->control_mode != CONTROL_MODE_JOINT) {
+            sharedData->control_mode = CONTROL_MODE_JOINT;
         }
 
         if (sharedData->control_mode == CONTROL_MODE_DIRECT_MOTOR)
@@ -517,10 +541,15 @@ void taskSolver(void* parameter)
                 const uint8_t id = jointMap[jointIndex].servoID;
                 ServoBusManager* pBus = getBusByIndex(bus);
 
-                const bool emergency =
+                bool emergency =
                     (!controlEnabled) ||
                     joint16DualFault ||
                     shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex);
+
+                // In pure local debug mode, only J04~J07 are actively driven.
+                if (kLocalDebugJointControl && !isDebugJoint(jointIndex)) {
+                    emergency = true;
+                }
 
                 if (!pBus) {
                     continue;
