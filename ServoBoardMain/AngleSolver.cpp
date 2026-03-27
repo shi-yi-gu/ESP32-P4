@@ -10,6 +10,7 @@
 #define SOLVER_DIAG_LOG_ENABLE 0
 #endif
 
+// 由 SystemTask 初始化的全局对象与映射表。
 extern ServoBusManager servoBus0;
 extern ServoBusManager servoBus1;
 extern ServoBusManager servoBus2;
@@ -19,6 +20,7 @@ extern JointMapItem jointMap[ENCODER_TOTAL_NUM];
 extern MotorMapItem joint16SecondaryMotor;
 extern MotorMapItem motorMap[SERVO_TOTAL_NUM];
 
+// 构造函数：清零缓存，等待 init()/setPIDParams() 配置。
 AngleSolver::AngleSolver() : _initialized(false)
 {
     memset(_zeroOffsets, 0, sizeof(_zeroOffsets));
@@ -27,6 +29,7 @@ AngleSolver::AngleSolver() : _initialized(false)
     memset(_pids, 0, sizeof(_pids));
 }
 
+// 初始化解算器基础参数（零偏、传动比、方向）。
 void AngleSolver::init(int16_t* zeroOffsets, float* gearRatios, int8_t* directions)
 {
     for (int i = 0; i < JOINT_COUNT; i++)
@@ -38,6 +41,8 @@ void AngleSolver::init(int16_t* zeroOffsets, float* gearRatios, int8_t* directio
     _initialized = true;
 }
 
+// 设置双环 PID 参数：
+// pidParams[0] 为外环（角度环），pidParams[1] 为内环（位置环）。
 void AngleSolver::setPIDParams(float pidParams[][PID_PARAMETER_NUM])
 {
     for (int i = 0; i < JOINT_COUNT; i++)
@@ -47,6 +52,9 @@ void AngleSolver::setPIDParams(float pidParams[][PID_PARAMETER_NUM])
     }
 }
 
+// 双环解算：
+// 1) 外环根据目标角与编码器角度得到位置增量；
+// 2) 内环根据目标位置与绝对位置输出舵机目标脉冲。
 bool AngleSolver::compute(float* targetDegs, float* magActualDegs,
                           const int32_t* absolutePosition, int16_t* outServoPulses)
 {
@@ -63,6 +71,7 @@ bool AngleSolver::compute(float* targetDegs, float* magActualDegs,
     return true;
 }
 
+// 读取指定关节某一环路的 PID 输出（用于调试上报）。
 float AngleSolver::getPidOutput(uint8_t jointIndex, uint8_t loopIndex) const
 {
     if (jointIndex >= JOINT_COUNT || loopIndex > 1) {
@@ -71,14 +80,13 @@ float AngleSolver::getPidOutput(uint8_t jointIndex, uint8_t loopIndex) const
     return _pids[jointIndex][loopIndex].Output;
 }
 
+// 编码器基础常量（14bit，16384counts/圈）。
 static const int32_t kEncoderModulo = 16384;
 static const int32_t kEncoderHalfTurn = kEncoderModulo / 2;
+// 映射时的边界裕量，减少边界跳变导致的误判。
 static const int32_t kEncoderMarginCounts = (kEncoderModulo * 10 + 180) / 360;
 
-static const uint8_t kClosedLoopJointIndices[] = {4, 5, 6, 7, 16};
-static const uint8_t kClosedLoopJointCount =
-    (uint8_t)(sizeof(kClosedLoopJointIndices) / sizeof(kClosedLoopJointIndices[0]));
-
+// 调试包关注的关节索引列表（仅影响调试输出）。
 static const uint8_t kDebugJointIndices[] = {4, 5, 6, 7};
 static const uint8_t kDebugJointCount =
     (uint8_t)(sizeof(kDebugJointIndices) / sizeof(kDebugJointIndices[0]));
@@ -93,21 +101,10 @@ static const int32_t kJoint16TensionBias = 0;
 static const int32_t kJoint16DiffThresholdCounts = 180;
 static const uint8_t kJoint16DiffFaultCycles = 3;
 
-// Firmware-only debug mode:
-// - ignores host START gate for closed-loop joints,
-// - enforces JOINT mode,
-// - drives J04~J07 using built-in target generator.
-static const bool kLocalDebugJointControl = true;
-static const float kDebugTargetMinDeg = 10.0f;
-static const float kDebugTargetMaxDeg = 40.0f;
-static const uint32_t kDebugTargetHoldMs = 2500;
-static const uint32_t kDebugTargetMoveMs = 5000;
-static const bool kDebugUseSineTarget = true;
-static const float kDebugFixedTargetDeg = 20.0f;
-
 static const uint32_t kCanBusOfflineTimeoutMs = 300;
 static const uint16_t kEncoderDisconnectRaw = 0xFFFF;
 
+// 协议映射值限幅，避开断连保留值范围。
 static int16_t clampMappedCountForProtocol(int32_t value)
 {
     if (value > 32766) return 32766;
@@ -122,6 +119,7 @@ static int16_t clampServoPos(int32_t value)
     return (int16_t)value;
 }
 
+// 按安装方向统一编码器方向，输出范围 [0, kEncoderModulo)。
 static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction)
 {
     int32_t oriented = (int32_t)rawValue & (kEncoderModulo - 1);
@@ -131,6 +129,7 @@ static int32_t orientEncoderRaw(uint16_t rawValue, int8_t direction)
     return oriented;
 }
 
+// 增量折叠到半圈范围，得到最短路径差值。
 static int32_t wrapEncoderDelta(int32_t delta)
 {
     while (delta > kEncoderHalfTurn) delta -= kEncoderModulo;
@@ -138,6 +137,7 @@ static int32_t wrapEncoderDelta(int32_t delta)
     return delta;
 }
 
+// 优先使用自动标定零偏，失败时回退到手动零偏表。
 static int32_t getEncoderOffset(uint8_t jointIndex)
 {
     if (jointIndex >= ENCODER_TOTAL_NUM) return 0;
@@ -147,11 +147,41 @@ static int32_t getEncoderOffset(uint8_t jointIndex)
     return g_encoderOffsetManual[jointIndex];
 }
 
+// 编码器计数 -> 角度（度）。
 static float convertEncoderCountToDeg(int32_t encoderCount)
 {
     return (float)encoderCount * 360.0f / (float)kEncoderModulo;
 }
 
+// 目标角限幅：约束到 [0, angleScope-bottomReserved-topReserved]（度）。
+static float clampJointTargetDegByCalib(float targetDeg, uint8_t jointIndex)
+{
+    if (!isfinite(targetDeg)) {
+        targetDeg = 0.0f;
+    }
+    if (jointIndex >= ENCODER_TOTAL_NUM) {
+        return 0.0f;
+    }
+
+    const int32_t maxCount =
+        g_jointCalibConfig[jointIndex].angleScope -
+        g_jointCalibConfig[jointIndex].bottomReserved -
+        g_jointCalibConfig[jointIndex].topReserved;
+    const float maxDeg = convertEncoderCountToDeg(maxCount);
+
+    if (!isfinite(maxDeg) || maxDeg <= 0.0f) {
+        return 0.0f;
+    }
+    if (targetDeg < 0.0f) {
+        return 0.0f;
+    }
+    if (targetDeg > maxDeg) {
+        return maxDeg;
+    }
+    return targetDeg;
+}
+
+// 单关节急停判定：任一输入状态异常即触发急停。
 static bool shouldEmergencyStop(bool canBusOnline,
                                 const RemoteSensorData_t& sensorData,
                                 const MappedAngleData_t& mappedData,
@@ -172,50 +202,7 @@ static bool shouldEmergencyStop(bool canBusOnline,
     return false;
 }
 
-static float computeSineTarget(float minDeg,
-                               float maxDeg,
-                               uint32_t holdMs,
-                               uint32_t moveMs,
-                               uint32_t nowMs)
-{
-    if (maxDeg < minDeg) {
-        const float tmp = minDeg;
-        minDeg = maxDeg;
-        maxDeg = tmp;
-    }
-
-    const float range = maxDeg - minDeg;
-    if (range == 0.0f) return minDeg;
-
-    if (moveMs == 0) {
-        const uint32_t cycle = holdMs * 2;
-        if (cycle == 0) return minDeg;
-        const uint32_t t = nowMs % cycle;
-        return (t < holdMs) ? minDeg : maxDeg;
-    }
-
-    const uint32_t cycle = holdMs * 2 + moveMs * 2;
-    if (cycle == 0) return minDeg;
-
-    uint32_t t = nowMs % cycle;
-    if (t < holdMs) return minDeg;
-    t -= holdMs;
-
-    if (t < moveMs) {
-        const float s = (float)t / (float)moveMs;
-        const float w = 0.5f - 0.5f * cosf(3.1415926f * s);
-        return minDeg + range * w;
-    }
-
-    t -= moveMs;
-    if (t < holdMs) return maxDeg;
-    t -= holdMs;
-
-    const float s = (float)t / (float)moveMs;
-    const float w = 0.5f - 0.5f * cosf(3.1415926f * s);
-    return maxDeg - range * w;
-}
-
+// 总线索引 -> 总线管理器实例。
 static ServoBusManager* getBusByIndex(uint8_t busIndex)
 {
     switch (busIndex)
@@ -228,6 +215,7 @@ static ServoBusManager* getBusByIndex(uint8_t busIndex)
     }
 }
 
+// 通过 bus + servoId 找到电机通道索引，找不到返回 -1。
 static int findMotorChannel(uint8_t bus, uint8_t id)
 {
     for (int i = 0; i < SERVO_TOTAL_NUM; i++)
@@ -239,6 +227,7 @@ static int findMotorChannel(uint8_t bus, uint8_t id)
     return -1;
 }
 
+// 向某总线读取列表追加目标舵机（自动去重）。
 static bool addReadTarget(uint8_t busIds[NUM_BUSES][MAX_SERVOS_PER_BUS],
                           uint8_t busCounts[NUM_BUSES],
                           uint8_t bus,
@@ -260,17 +249,11 @@ static bool addReadTarget(uint8_t busIds[NUM_BUSES][MAX_SERVOS_PER_BUS],
     return true;
 }
 
-static bool isDebugJoint(uint8_t jointIndex)
-{
-    for (uint8_t i = 0; i < kDebugJointCount; i++)
-    {
-        if (kDebugJointIndices[i] == jointIndex) {
-            return true;
-        }
-    }
-    return false;
-}
-
+// Solver 任务主循环：
+// 1) 读取舵机反馈并上报遥测；
+// 2) 构建关节反馈量与传感器映射量；
+// 3) 执行限幅与双环解算；
+// 4) 根据控制模式与安全状态下发命令。
 void taskSolver(void* parameter)
 {
     TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;
@@ -300,12 +283,13 @@ void taskSolver(void* parameter)
         int16_t jointCmdPos[ENCODER_TOTAL_NUM] = {0};
         uint8_t jointCmdValid[ENCODER_TOTAL_NUM] = {0};
 
-        // 每周期读取全部舵机通道，保证 22 通道上报完整可见。
+        // 阶段1：收集本周期需要读取的舵机列表。
         for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
         {
             addReadTarget(readIds, readCounts, motorMap[ch].busIndex, motorMap[ch].servoID);
         }
 
+        // 阶段2：按总线执行批量同步读取，刷新反馈缓存。
         for (uint8_t bus = 0; bus < NUM_BUSES; bus++)
         {
             if (readCounts[bus] == 0) {
@@ -350,11 +334,10 @@ void taskSolver(void* parameter)
             xQueueOverwrite(sharedData->servoTelemetryQueue, &telemetryData);
         }
 
-        // 从舵机反馈构建“关节侧”绝对位置（闭环用）。
+        // 阶段3：从舵机反馈构建“关节侧”绝对位置（闭环输入）。
         memset(absolutePosition, 0, sizeof(absolutePosition));
-        for (uint8_t i = 0; i < kClosedLoopJointCount; i++)
+        for (uint8_t jointIndex = 0; jointIndex < ENCODER_TOTAL_NUM; jointIndex++)
         {
-            const uint8_t jointIndex = kClosedLoopJointIndices[i];
             const uint8_t bus = jointMap[jointIndex].busIndex;
             const uint8_t id = jointMap[jointIndex].servoID;
             const int ch = findMotorChannel(bus, id);
@@ -382,7 +365,7 @@ void taskSolver(void* parameter)
                 const int32_t fused = (p + sProj) / 2;
                 const int32_t diff = (p >= sProj) ? (p - sProj) : (sProj - p);
 
-                // 双反馈融合后的关节16位置用于闭环。
+                // 双反馈融合后的 joint16 位置用于闭环。
                 absolutePosition[kJoint16Index] = fused;
 
                 // 连续超差判故障，抑制单周期抖动误触发。
@@ -466,36 +449,27 @@ void taskSolver(void* parameter)
             xSemaphoreGive(sharedData->targetAnglesMutex);
         }
         const bool hostControlEnabled = (sharedData->control_enabled != 0);
-        const bool controlEnabled = hostControlEnabled || kLocalDebugJointControl;
+        const bool controlEnabled = hostControlEnabled;
 
-        if (controlEnabled && kLocalDebugJointControl) {
-            for (uint8_t di = 0; di < kDebugJointCount; di++) {
-                const uint8_t jointIndex = kDebugJointIndices[di];
-                localTargets[jointIndex] = kDebugUseSineTarget
-                    ? computeSineTarget(
-                        kDebugTargetMinDeg,
-                        kDebugTargetMaxDeg,
-                        kDebugTargetHoldMs,
-                        kDebugTargetMoveMs,
-                        millis())
-                    : kDebugFixedTargetDeg;
+        // 仅关节控制模式下执行角度限幅（直控模式透传原始目标）。
+        if (sharedData->control_mode == CONTROL_MODE_JOINT) {
+            for (uint8_t jointIndex = 0; jointIndex < ENCODER_TOTAL_NUM; jointIndex++) {
+                localTargets[jointIndex] = clampJointTargetDegByCalib(localTargets[jointIndex], jointIndex);
             }
         }
 
+        // 阶段4：执行双环解算，得到每关节目标脉冲。
         angleSolver.compute(localTargets, magAngles, absolutePosition, outPulses);
-
-        if (kLocalDebugJointControl && sharedData->control_mode != CONTROL_MODE_JOINT) {
-            sharedData->control_mode = CONTROL_MODE_JOINT;
-        }
 
         if (sharedData->control_mode == CONTROL_MODE_DIRECT_MOTOR)
         {
-            if (!controlEnabled || joint16DualFault) {
-                if (joint16DualFault) {
-                    // 触发双反馈故障后，需显式 start/reset 才恢复。
-                    sharedData->control_enabled = 0;
-                }
-            } else {
+            // Direct mode: send motorTargetRaw, but joint16 dual-fault only affects joint16 pair.
+            if (controlEnabled) {
+                const int joint16PrimaryCh =
+                    findMotorChannel(jointMap[kJoint16Index].busIndex, jointMap[kJoint16Index].servoID);
+                const int joint16SecondaryCh =
+                    findMotorChannel(joint16SecondaryMotor.busIndex, joint16SecondaryMotor.servoID);
+
                 for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
                 {
                     const uint8_t bus = motorMap[ch].busIndex;
@@ -504,6 +478,19 @@ void taskSolver(void* parameter)
                     if (!pBus) {
                         continue;
                     }
+
+                    const bool isJoint16Motor =
+                        ((int)ch == joint16PrimaryCh) || ((int)ch == joint16SecondaryCh);
+                    if (joint16DualFault && isJoint16Motor)
+                    {
+                        if (pBus->isOnline(id)) {
+                            const int16_t holdPos = clampServoPos(servoData.servoAngles[ch]);
+                            pBus->setTarget(id, holdPos, 1000, 50);
+                            busWritePending[bus] = true;
+                        }
+                        continue;
+                    }
+
                     const int16_t targetPos = clampServoPos(sharedData->motorTargetRaw[ch]);
                     pBus->setTarget(id, targetPos, 1000, 50);
                     busWritePending[bus] = true;
@@ -512,21 +499,18 @@ void taskSolver(void* parameter)
         }
         else
         {
-            for (uint8_t i = 0; i < kClosedLoopJointCount; i++)
+            // Joint mode: evaluate emergency per joint and send commands.
+            for (uint8_t jointIndex = 0; jointIndex < ENCODER_TOTAL_NUM; jointIndex++)
             {
-                const uint8_t jointIndex = kClosedLoopJointIndices[i];
                 const uint8_t bus = jointMap[jointIndex].busIndex;
                 const uint8_t id = jointMap[jointIndex].servoID;
                 ServoBusManager* pBus = getBusByIndex(bus);
 
                 bool emergency =
                     (!controlEnabled) ||
-                    joint16DualFault ||
                     shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex);
-
-                // In pure local debug mode, only J04~J07 are actively driven.
-                if (kLocalDebugJointControl && !isDebugJoint(jointIndex)) {
-                    emergency = true;
+                if (jointIndex == kJoint16Index) {
+                    emergency = emergency || joint16DualFault;
                 }
 
                 if (!pBus) {
@@ -535,6 +519,7 @@ void taskSolver(void* parameter)
 
                 if (emergency)
                 {
+                    // 鎬ュ仠绛栫暐锛氫繚鎸佸綋鍓嶄綅缃紝閬垮厤寮傚父鐘舵€佷笅缁х画杩愬姩銆?
                     if (pBus->isOnline(id)) {
                         const int16_t holdPos = clampServoPos(absolutePosition[jointIndex]);
                         pBus->setTarget(id, holdPos, 1000, 50);
@@ -564,7 +549,7 @@ void taskSolver(void* parameter)
                 if (jointIndex == kJoint16Index) {
                     ServoBusManager* pSecBus = getBusByIndex(joint16SecondaryMotor.busIndex);
                     if (pSecBus) {
-                        // joint16 拮抗下发：主收绳时副放绳（反向+偏置）。
+                        // joint16 鎷姉涓嬪彂锛氫富鏀剁怀鏃跺壇鏀剧怀锛堝弽鍚?+ 鍋忕疆锛夈€?
                         const int32_t secTarget = -((int32_t)targetPos) + kJoint16SecondaryOffset + kJoint16TensionBias;
                         pSecBus->setTarget(joint16SecondaryMotor.servoID, clampServoPos(secTarget), 1000, 50);
                         busWritePending[joint16SecondaryMotor.busIndex] = true;
@@ -575,6 +560,7 @@ void taskSolver(void* parameter)
 
         if (sharedData->jointDebugQueue)
         {
+            // 调试上报：发送指定关节的目标/反馈/PID 输出与命令位置。
             for (uint8_t di = 0; di < kDebugJointCount; di++)
             {
                 const uint8_t jointIndex = kDebugJointIndices[di];
@@ -599,6 +585,7 @@ void taskSolver(void* parameter)
             }
         }
 
+        // 阶段5：按总线统一 flush 本周期写缓存，降低串口占用。
         for (uint8_t bus = 0; bus < NUM_BUSES; bus++)
         {
             if (!busWritePending[bus]) {

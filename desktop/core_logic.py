@@ -1,5 +1,6 @@
 import queue
 import threading
+import math
 from typing import List, Optional
 
 from calibration import run_calibration
@@ -7,9 +8,6 @@ from comm_layer import LowerComputerComm, list_ports
 from data_models import HandModel
 from hand_geometry import has_calib_file, load_calib_zero_raw
 from protocol import ENCODER_COUNT, MOTOR_COUNT, ControlMode
-
-ANGLE_LIMITS: List[tuple] = [(0.0, 90.0)] * ENCODER_COUNT
-
 
 class HandController:
     def __init__(self):
@@ -116,12 +114,14 @@ class HandController:
 
     def _validate_angles(self, angles: List[float]) -> List[float]:
         out: List[float] = []
-        for i, a in enumerate(angles):
-            if i < len(ANGLE_LIMITS):
-                lo, hi = ANGLE_LIMITS[i]
-                out.append(max(lo, min(hi, float(a))))
-            else:
-                out.append(float(a))
+        for a in angles:
+            try:
+                v = float(a)
+            except (TypeError, ValueError):
+                v = 0.0
+            if not math.isfinite(v):
+                v = 0.0
+            out.append(v)
         return out
 
     def calibrate(self, progress_cb=None, done_cb=None):
