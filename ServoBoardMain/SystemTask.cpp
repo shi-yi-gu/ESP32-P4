@@ -89,6 +89,8 @@ void System_Init() {
     sharedData.control_enabled = 0;
     sharedData.control_mode = CONTROL_MODE_JOINT;
     sharedData.joint16_dual_feedback_fault = 0;
+    sharedData.overload_fault_bitmap = 0;
+    sharedData.overload_fault_reset_token = 0;
     sharedData.calib_zero_raw_valid = 0;
 
     // 4) 初始化全部舵机总线，保持与现有接线假设一致。

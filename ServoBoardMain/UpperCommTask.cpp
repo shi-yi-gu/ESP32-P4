@@ -17,6 +17,7 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_JOINT1_DEBUG 0x04
 #define PACKET_TYPE_SERVO_TELEM 0x05
 #define PACKET_TYPE_PROTO_ACK 0x06
+#define PACKET_TYPE_FAULT_STATUS 0x07
 
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
@@ -44,6 +45,7 @@ static const size_t kCmdMotorPosFrameBytes = 1 + kMotorPosPayloadBytes;
 static const size_t kCmdSensorStreamModeFrameBytes = 2;
 static const size_t kSerialRxBufferSize = 512;
 static const int32_t kEncoderModulo = 16384;
+static const uint32_t kFaultStatusHeartbeatMs = 200;
 static uint8_t g_sensorStreamMode = SENSOR_STREAM_MODE_SIGNED_I16;
 
 static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
@@ -89,6 +91,23 @@ static void sendProtoAckPacket(uint8_t cmd, uint8_t appliedMode, uint8_t status)
     buffer[idx++] = cmd;
     buffer[idx++] = appliedMode;
     buffer[idx++] = status;
+    buffer[idx++] = PROTOCOL_TAIL;
+    buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
+    Serial.write(buffer, idx);
+}
+
+static void sendFaultStatusPacket(uint32_t overloadFaultBitmap)
+{
+    uint8_t buffer[8];
+    size_t idx = 0;
+
+    buffer[idx++] = PROTOCOL_HEADER;
+    buffer[idx++] = 0x00;
+    buffer[idx++] = PACKET_TYPE_FAULT_STATUS;
+    buffer[idx++] = (uint8_t)((overloadFaultBitmap >> 24) & 0xFF);
+    buffer[idx++] = (uint8_t)((overloadFaultBitmap >> 16) & 0xFF);
+    buffer[idx++] = (uint8_t)((overloadFaultBitmap >> 8) & 0xFF);
+    buffer[idx++] = (uint8_t)(overloadFaultBitmap & 0xFF);
     buffer[idx++] = PROTOCOL_TAIL;
     buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
     Serial.write(buffer, idx);
@@ -350,6 +369,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
         // START only restores control enable and fault counter.
         sharedData->control_enabled = 1;
         sharedData->joint16_dual_feedback_fault = 0;
+        sharedData->overload_fault_reset_token++;
         return;
     }
 
@@ -367,6 +387,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
         sharedData->control_enabled = 0;
         sharedData->control_mode = CONTROL_MODE_JOINT;
         sharedData->joint16_dual_feedback_fault = 0;
+        sharedData->overload_fault_reset_token++;
         return;
     }
 
@@ -423,6 +444,9 @@ void taskUpperComm(void* parameter)
     MappedAngleData_t mappedData;
     uint8_t rxBuffer[kSerialRxBufferSize];
     size_t rxLen = 0;
+    uint32_t lastFaultStatusSent = 0;
+    uint32_t lastFaultStatusSentMs = 0;
+    bool faultStatusSentInitialized = false;
 
     Serial.println("<<<SYS_READY>>>");
 
@@ -513,6 +537,19 @@ void taskUpperComm(void* parameter)
             {
                 sendDataPacket(NULL, NULL, NULL, NULL, NULL);
             }
+        }
+
+        const uint32_t nowMs = millis();
+        const uint32_t faultBitmap = sharedData->overload_fault_bitmap;
+        const bool bitmapChanged =
+            (!faultStatusSentInitialized) || (faultBitmap != lastFaultStatusSent);
+        const bool heartbeatDue =
+            (!faultStatusSentInitialized) || ((nowMs - lastFaultStatusSentMs) >= kFaultStatusHeartbeatMs);
+        if (bitmapChanged || heartbeatDue) {
+            sendFaultStatusPacket(faultBitmap);
+            lastFaultStatusSent = faultBitmap;
+            lastFaultStatusSentMs = nowMs;
+            faultStatusSentInitialized = true;
         }
 
         vTaskDelay(pdMS_TO_TICKS(5));

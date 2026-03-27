@@ -112,6 +112,8 @@ class HandModel:
     servo_voltage: List[int] = field(default_factory=lambda: [0] * MOTOR_COUNT)
     servo_temperature: List[int] = field(default_factory=lambda: [0] * MOTOR_COUNT)
     servo_telem_online: List[bool] = field(default_factory=lambda: [False] * MOTOR_COUNT)
+    # 伺服过载保护锁存状态（来自 PACKET_TYPE_FAULT_STATUS，按 motor channel 位图映射）
+    servo_overload_fault: List[bool] = field(default_factory=lambda: [False] * MOTOR_COUNT)
 
     # 关节调试信息（来自 PACKET_TYPE_JOINT_DEBUG）
     joint_debug_valid: List[bool] = field(default_factory=lambda: [False] * ENCODER_COUNT)
@@ -168,6 +170,7 @@ class HandModel:
         self.servo_voltage = list(other.servo_voltage)
         self.servo_temperature = list(other.servo_temperature)
         self.servo_telem_online = list(other.servo_telem_online)
+        self.servo_overload_fault = list(other.servo_overload_fault)
         # 复制关节调试信息
         self.joint_debug_valid = list(other.joint_debug_valid)
         self.joint_debug_target_deg = list(other.joint_debug_target_deg)

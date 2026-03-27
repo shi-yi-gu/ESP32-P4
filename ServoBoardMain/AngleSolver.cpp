@@ -117,6 +117,8 @@ static const float kReleaseRecoverPullCmdDeg = 2.5f;
 static const float kReleaseRecoverTrackErrDeg = 1.5f;
 static const uint8_t kReleaseRecoverStableCycles = 8;
 static const float kReleaseWindowTargetDeltaDeg = -0.3f;
+static const int16_t kOverloadThreshold = 300;
+static const uint8_t kOverloadDebounceCycles = 5;
 
 struct ReleaseGuardState {
     uint8_t faultActive;
@@ -326,15 +328,22 @@ void taskSolver(void* parameter)
     int32_t absolutePosition[ENCODER_TOTAL_NUM] = {0};
     int16_t outPulses[ENCODER_TOTAL_NUM] = {0};
     ReleaseGuardState releaseGuards[ENCODER_TOTAL_NUM];
+    uint8_t overloadDebounce[SERVO_TOTAL_NUM] = {0};
+    uint8_t overloadFaultLatched[SERVO_TOTAL_NUM] = {0};
 
     RemoteSensorData_t sensorData;
     MappedAngleData_t mappedData;
     uint8_t joint16DiffFaultCounter = 0;
     bool prevControlEnabled = false;
+    uint32_t lastOverloadResetToken = sharedData->overload_fault_reset_token;
 
     for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++) {
         resetReleaseGuardState(&releaseGuards[i]);
     }
+    const int joint16PrimaryCh =
+        findMotorChannel(jointMap[kJoint16Index].busIndex, jointMap[kJoint16Index].servoID);
+    const int joint16SecondaryCh =
+        findMotorChannel(joint16SecondaryMotor.busIndex, joint16SecondaryMotor.servoID);
 
 #if SOLVER_DIAG_LOG_ENABLE
     uint32_t lastDiagLogMs = 0;
@@ -351,6 +360,14 @@ void taskSolver(void* parameter)
         uint8_t readCounts[NUM_BUSES] = {0};
         int16_t jointCmdPos[ENCODER_TOTAL_NUM] = {0};
         uint8_t jointCmdValid[ENCODER_TOTAL_NUM] = {0};
+        const uint32_t overloadResetToken = sharedData->overload_fault_reset_token;
+
+        if (overloadResetToken != lastOverloadResetToken) {
+            memset(overloadDebounce, 0, sizeof(overloadDebounce));
+            memset(overloadFaultLatched, 0, sizeof(overloadFaultLatched));
+            sharedData->overload_fault_bitmap = 0;
+            lastOverloadResetToken = overloadResetToken;
+        }
 
         // 阶段1：收集本周期需要读取的舵机列表。
         for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
@@ -405,6 +422,54 @@ void taskSolver(void* parameter)
         if (sharedData->servoTelemetryQueue) {
             xQueueOverwrite(sharedData->servoTelemetryQueue, &telemetryData);
         }
+
+        if (sharedData->control_mode == CONTROL_MODE_JOINT)
+        {
+            for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
+            {
+                if (overloadFaultLatched[ch] != 0) {
+                    overloadDebounce[ch] = 0;
+                    continue;
+                }
+
+                const bool sampleValid = (servoData.onlineStatus[ch] != 0);
+                const bool overloadNow = sampleValid && (telemetryData.load[ch] >= kOverloadThreshold);
+                if (overloadNow) {
+                    if (overloadDebounce[ch] < 255) {
+                        overloadDebounce[ch]++;
+                    }
+                    if (overloadDebounce[ch] >= kOverloadDebounceCycles) {
+                        overloadFaultLatched[ch] = 1;
+                        overloadDebounce[ch] = 0;
+                        if ((int)ch == joint16PrimaryCh || (int)ch == joint16SecondaryCh) {
+                            if (joint16PrimaryCh >= 0) {
+                                overloadFaultLatched[joint16PrimaryCh] = 1;
+                                overloadDebounce[joint16PrimaryCh] = 0;
+                            }
+                            if (joint16SecondaryCh >= 0) {
+                                overloadFaultLatched[joint16SecondaryCh] = 1;
+                                overloadDebounce[joint16SecondaryCh] = 0;
+                            }
+                        }
+                    }
+                } else {
+                    overloadDebounce[ch] = 0;
+                }
+            }
+        }
+        else
+        {
+            memset(overloadDebounce, 0, sizeof(overloadDebounce));
+        }
+
+        uint32_t overloadFaultBitmap = 0;
+        for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM && ch < 32; ch++)
+        {
+            if (overloadFaultLatched[ch] != 0) {
+                overloadFaultBitmap |= (1UL << ch);
+            }
+        }
+        sharedData->overload_fault_bitmap = overloadFaultBitmap;
 
         // 阶段3：从舵机反馈构建“关节侧”绝对位置（闭环输入）。
         memset(absolutePosition, 0, sizeof(absolutePosition));
@@ -542,11 +607,6 @@ void taskSolver(void* parameter)
         {
             // Direct mode: send motorTargetRaw, but joint16 dual-fault only affects joint16 pair.
             if (controlEnabled) {
-                const int joint16PrimaryCh =
-                    findMotorChannel(jointMap[kJoint16Index].busIndex, jointMap[kJoint16Index].servoID);
-                const int joint16SecondaryCh =
-                    findMotorChannel(joint16SecondaryMotor.busIndex, joint16SecondaryMotor.servoID);
-
                 for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
                 {
                     const uint8_t bus = motorMap[ch].busIndex;
@@ -673,13 +733,19 @@ void taskSolver(void* parameter)
                     guard.prevServoPos = servoPos;
                 }
 
+                bool overloadFaultActive = (ch >= 0) && (overloadFaultLatched[ch] != 0);
+                if (jointIndex == kJoint16Index && joint16SecondaryCh >= 0) {
+                    overloadFaultActive =
+                        overloadFaultActive || (overloadFaultLatched[joint16SecondaryCh] != 0);
+                }
+
                 bool emergency =
                     (!controlEnabled) ||
                     shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex);
                 if (jointIndex == kJoint16Index) {
-                    emergency = emergency || joint16DualFault;
+                    emergency = emergency || joint16DualFault || overloadFaultActive;
                 } else {
-                    emergency = emergency || releaseFaultActive;
+                    emergency = emergency || releaseFaultActive || overloadFaultActive;
                 }
 
                 if (!pBus) {

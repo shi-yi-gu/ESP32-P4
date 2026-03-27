@@ -116,6 +116,10 @@ typedef struct {
     volatile uint8_t control_enabled;
     volatile uint8_t control_mode; // CONTROL_MODE_*
     volatile uint8_t joint16_dual_feedback_fault;
+    // Bit i: motor channel i overload-latched fault state.
+    volatile uint32_t overload_fault_bitmap;
+    // Incremented by START/RESET commands to request overload-latch clear.
+    volatile uint32_t overload_fault_reset_token;
 
     int32_t calib_zero_raw_cache[ENCODER_TOTAL_NUM];
     volatile uint8_t calib_zero_raw_valid;

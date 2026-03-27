@@ -12,6 +12,7 @@ from protocol import (
     BAUDRATE,
     ENCODER_COUNT,
     MOTOR_COUNT,
+    PACKET_TYPE_FAULT_STATUS,
     RX_POLL_SLEEP,
     RX_QUEUE_MAXSIZE,
     SERIAL_TIMEOUT,
@@ -27,6 +28,7 @@ from protocol import (
     build_stop_cmd,
     CMD_SENSOR_STREAM_MODE,
     parse_calib_ack,
+    parse_fault_status_packet,
     parse_frame,
     parse_joint_debug_packet,
     parse_proto_ack,
@@ -269,6 +271,13 @@ class LowerComputerComm:
                                 f"(status={status}, applied={applied_mode})."
                             )
                             self._stream_mode_ack_warned = True
+
+            elif pkt_type == PACKET_TYPE_FAULT_STATUS:
+                fault_bitmap = parse_fault_status_packet(payload)
+                if fault_bitmap is not None:
+                    for i in range(MOTOR_COUNT):
+                        model.servo_overload_fault[i] = ((fault_bitmap >> i) & 0x01) != 0
+                    emitted = True
 
         self._last_model = model
         return model if emitted else None
