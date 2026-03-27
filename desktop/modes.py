@@ -6,6 +6,9 @@ from typing import Optional
 
 from core_logic import HandController
 
+# Keep this as a fallback only; runtime pose source is decided in ui_main.py.
+POSE_DISPLAY_FROM_TEXT = False
+
 
 class Mode(Enum):
     MONITOR = "monitor"
@@ -15,6 +18,7 @@ class Mode(Enum):
 
 def _run_monitor_gui(controller: HandController, port: Optional[str] = None) -> None:
     controller.reset()
+    # 下位机 start 与显示由主界面 [Start]/[Stop] 控制
     from ui_main import HandGUI
     gui_win = HandGUI(
         controller,
@@ -22,6 +26,7 @@ def _run_monitor_gui(controller: HandController, port: Optional[str] = None) -> 
         current_port=port,
         current_mode="Monitor",
         action_callback=lambda msg: print(f"UI action: {msg}", flush=True),
+        pose_generate=POSE_DISPLAY_FROM_TEXT,
     )
     gui_win.run()
 
@@ -64,6 +69,7 @@ def _run_algorithm_gui(controller: HandController, port: Optional[str] = None) -
         current_port=port,
         current_mode="Algorithm",
         on_close_extra=lambda: stop_event.set(),
+        pose_generate=POSE_DISPLAY_FROM_TEXT,
     )
     gui_win.run()
     stop_event.set()

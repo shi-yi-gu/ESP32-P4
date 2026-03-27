@@ -1,6 +1,8 @@
+# core_logic.py - 灵巧手控制器核心逻辑（关节角路数与协议 ENCODER_COUNT 一致，电机路数与 MOTOR_COUNT 一致）
+
+import math
 import queue
 import threading
-import math
 from typing import List, Optional
 
 from calibration import run_calibration
@@ -9,7 +11,10 @@ from data_models import HandModel
 from hand_geometry import has_calib_file, load_calib_zero_raw
 from protocol import ENCODER_COUNT, MOTOR_COUNT, ControlMode
 
+
 class HandController:
+    """灵巧手控制器：ENCODER_COUNT 路关节目标角，MOTOR_COUNT 路直驱电机原始值。"""
+
     def __init__(self):
         self.comm: Optional[LowerComputerComm] = None
         self.current_state = HandModel()
@@ -25,6 +30,7 @@ class HandController:
         self._started = False
 
     def set_control_mode(self, mode: ControlMode):
+        """设置电机控制模式：JOINT_ANGLE 或 DIRECT_MOTOR"""
         self._control_mode = mode
 
     def get_control_mode(self) -> ControlMode:
@@ -34,15 +40,18 @@ class HandController:
         self._pid_enabled = enabled
 
     def pause(self):
+        """暂停：停止向下位机发送控制指令（数据接收照常）"""
         self._paused = True
 
     def resume(self):
+        """恢复：重新允许发送控制指令"""
         self._paused = False
 
     def is_paused(self) -> bool:
         return self._paused
 
     def toggle_pause(self) -> bool:
+        """切换暂停状态，返回当前是否已暂停"""
         self._paused = not self._paused
         return self._paused
 
@@ -60,6 +69,7 @@ class HandController:
         self._started = False
         threading.Thread(target=self._update_loop, daemon=True).start()
 
+        # 连接成功后下发 calib_deg.json 中的编码器零点
         zero_raw = load_calib_zero_raw()
         if zero_raw:
             self.comm.send_command(("calib_data", zero_raw))
@@ -94,6 +104,7 @@ class HandController:
                 continue
 
     def set_target_angles(self, angles: List[float]):
+        """设置 ENCODER_COUNT 路关节目标角（度），JOINT_ANGLE 模式；暂停时不发送"""
         if self._paused:
             return
         if len(angles) != ENCODER_COUNT:
@@ -106,6 +117,7 @@ class HandController:
             self.comm.send_command(self.current_state)
 
     def set_motor_positions_raw(self, motor_pos_raw: List[int]):
+        """设置 MOTOR_COUNT 路电机目标编码器原始值，DIRECT_MOTOR 模式；暂停时不发送"""
         if self._paused:
             return
         if len(motor_pos_raw) != MOTOR_COUNT:
@@ -128,6 +140,10 @@ class HandController:
         return out
 
     def calibrate(self, progress_cb=None, done_cb=None):
+        """
+        上位机主导的校准：逐关节寻零，保存至 calib_deg.json 并下发下位机。
+        progress_cb(current, total, msg)、done_cb(success, zero_raw_or_none)。
+        """
         if self._paused:
             return
         if not self.comm:
@@ -150,11 +166,13 @@ class HandController:
             self._started = True
 
     def stop(self):
+        """停止：暂停时也可发送，便于紧急停"""
         if self.comm:
             self.comm.send_command("stop")
         self._started = False
 
     def reset(self):
+        """发送重置指令；暂停时不发送"""
         if self._paused:
             return
         if self.comm:

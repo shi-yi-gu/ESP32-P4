@@ -140,8 +140,8 @@ def parse_joint_debug_packet(
         ">BBfffff", payload[:legacy_len]
     )
     if len(payload) == extended_len:
-        cmd_valid = (payload[legacy_len] == 1)
-        cmd_target_pos = struct.unpack(">h", payload[legacy_len + 1:legacy_len + 3])[0]
+        cmd_valid = payload[legacy_len] == 1
+        cmd_target_pos = struct.unpack(">h", payload[legacy_len + 1 : legacy_len + 3])[0]
     else:
         cmd_valid = False
         cmd_target_pos = 0

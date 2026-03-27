@@ -318,7 +318,6 @@ def run_development_mode(*, no_plot: bool = False) -> None:
 
     print(f"Connecting to {selected_port} ...")
     controller.set_pid_control(False)
-    # Keep behavior aligned with GUI monitor: enable lower controller on enter.
     controller.start()
 
     plotter = None

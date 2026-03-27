@@ -1,7 +1,9 @@
+# hand_geometry.py - 从 config/hand_geo.json 加载人手尺寸并计算 15 段骨头端点
+# 坐标原点：手腕根部 (0,0,0)。0° 时手指伸直、指尖朝上 (+Y)；屈曲角使指尖向掌心侧弯曲
+
 import json
 import os
-from typing import List, Optional, Tuple
-
+from typing import List, Tuple, Optional
 import numpy as np
 
 from protocol import ENCODER_COUNT
@@ -20,6 +22,11 @@ def load_hand_geo(path: Optional[str] = None) -> dict:
 
 
 def load_calib_zero_raw(path: Optional[str] = None) -> Optional[List[int]]:
+    """
+    从 config/calib_deg.json 加载 ENCODER_COUNT 路关节在 0° 时对应的角编码器原始值。
+    文件不存在或 JSON 解析失败时返回 None（表示未校准）。
+    文件存在但 zero_encoder_raw 条目数少于 ENCODER_COUNT 时抛出 ValueError。
+    """
     p = path or CALIB_DEG_PATH
     if not os.path.isfile(p):
         return None
@@ -28,7 +35,6 @@ def load_calib_zero_raw(path: Optional[str] = None) -> Optional[List[int]]:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
-
     raw = data.get("zero_encoder_raw", [])
     if len(raw) < ENCODER_COUNT:
         raise ValueError(
@@ -37,13 +43,12 @@ def load_calib_zero_raw(path: Optional[str] = None) -> Optional[List[int]]:
     try:
         out = [int(v) for v in raw[:ENCODER_COUNT]]
     except (TypeError, ValueError):
-        raise ValueError(
-            f"校准文件 {p} 中 zero_encoder_raw 含有非整数或无效值"
-        ) from None
-    return out
+        raise ValueError(f"校准文件 {p} 中 zero_encoder_raw 含有非整数或无效值") from None
+    return out[:ENCODER_COUNT]
 
 
 def has_calib_file(path: Optional[str] = None) -> bool:
+    """检查校准文件是否存在且有效（条目数足够且可解析）"""
     try:
         return load_calib_zero_raw(path) is not None
     except ValueError:
@@ -51,15 +56,13 @@ def has_calib_file(path: Optional[str] = None) -> bool:
 
 
 def save_calib_zero_raw(values: List[int], path: Optional[str] = None) -> bool:
+    """将 ENCODER_COUNT 路关节 0° 编码器值保存到 calib_deg.json"""
     if len(values) < ENCODER_COUNT:
         return False
     p = path or CALIB_DEG_PATH
     try:
         data = {
-            "comment": (
-                f"{ENCODER_COUNT} 个关节角编码器在手指 0° 时对应的编码器原始值"
-                "（14 位 0~16383），下位机据此计算关节角度"
-            ),
+            "comment": f"{ENCODER_COUNT} 个关节角编码器在手指 0° 时对应的编码器原始值（14 位 0~16383）。下位机将据此计算关节角度",
             "zero_encoder_raw": [int(v) for v in values[:ENCODER_COUNT]],
         }
         with open(p, "w", encoding="utf-8") as f:
@@ -84,6 +87,10 @@ def _default_hand_geo() -> dict:
 
 
 def compute_segment_endpoints(hand_geo: dict, angles_deg: List[float]) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    根据 21 个关节角度（度）计算 15 段骨头的 3D 端点 (p_start, p_end)。
+    所有坐标相对于手腕原点 (0,0,0)。0° 时四指沿 +Y（指尖朝上），拇指沿 +X；屈曲角使指尖向掌心侧弯曲。
+    """
     scale = hand_geo.get("scale_display", 1.0)
     fingers = hand_geo["fingers"]
     deg = np.array(angles_deg, dtype=float)
@@ -91,7 +98,7 @@ def compute_segment_endpoints(hand_geo: dict, angles_deg: List[float]) -> List[T
         deg = np.append(deg, 0.0)
     deg = deg[:ENCODER_COUNT] * np.pi / 180.0
 
-    segments: List[Tuple[np.ndarray, np.ndarray]] = []
+    segments = []
     for fin in fingers:
         base = np.array(fin["base_offset_mm"], dtype=float) * scale
         lengths = np.array(fin["segment_lengths_mm"], dtype=float) * scale
@@ -100,18 +107,21 @@ def compute_segment_endpoints(hand_geo: dict, angles_deg: List[float]) -> List[T
 
         p = base.copy()
         angle_sum = 0.0
+
         for i in range(3):
             angle_sum += deg[idx[i]] if idx[i] < len(deg) else 0.0
             L = lengths[i]
+            # 屈曲：0° 为伸直沿 +Y，正角度向掌心（-Z）弯
             if plane == "yz":
+                # 四指：在 YZ 平面，初始方向 (0, 1, 0)，屈曲后 (0, cos(a), -sin(a))
                 dy = L * np.cos(angle_sum)
                 dz = -L * np.sin(angle_sum)
                 delta = np.array([0.0, dy, dz])
             else:
+                # 拇指：在 XZ 平面，初始 (1, 0, 0) 或略向掌心，屈曲 (cos(a), 0, -sin(a))
                 dx = L * np.cos(angle_sum)
                 dz = -L * np.sin(angle_sum)
                 delta = np.array([dx, 0.0, dz])
-
             p_next = p + delta
             segments.append((p.copy(), p_next.copy()))
             p = p_next
@@ -120,12 +130,13 @@ def compute_segment_endpoints(hand_geo: dict, angles_deg: List[float]) -> List[T
 
 
 def get_palm_outline(hand_geo: dict) -> np.ndarray:
+    """返回手掌轮廓点 (N, 3) mm，用于 3D 显示"""
     scale = hand_geo.get("scale_display", 1.0)
     palm = hand_geo.get("palm", {})
     w = palm.get("width_mm", 80) * scale * 0.5
     l = palm.get("length_mm", 100) * scale * 0.5
     center = np.array(palm.get("center_mm", [0, 50, 0]), dtype=float) * scale
-
+    # 近似椭圆/矩形轮廓
     t = np.linspace(0, 2 * np.pi, 24, endpoint=False)
     x = w * np.cos(t) + center[0]
     y = l * np.sin(t) + center[1]
