@@ -924,6 +924,10 @@ class HandGUI:
 
     def _on_calibrate(self):
         self._emit_action("Click [Calibrate]")
+        if not self.controller.is_started():
+            messagebox.showwarning("Calibration Blocked", "Please click Start before calibration.")
+            self.status_var.set("Calibration blocked: click Start first")
+            return
 
         def progress(current: int, total: int, msg: str):
             self.root.after(0, lambda: self.status_var.set(f"Calibration: {current + 1}/{total} {msg}"))

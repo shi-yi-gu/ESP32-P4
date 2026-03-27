@@ -111,13 +111,14 @@ static const int32_t kReleaseAccumPrecheckCounts = 256;
 static const int32_t kReleaseAccumEarlyFaultCounts = 512;
 static const int32_t kReleaseAccumHalfTurnCounts = 2048;
 static const int32_t kReleaseAccumFullTurnCounts = 4096;
-static const float kReleaseReverseDeltaDeg = 2.0f;
 static const float kReleaseMinReturnAccumDeg = 1.5f;
 static const float kReleaseRecoverPullCmdDeg = 2.5f;
 static const float kReleaseRecoverTrackErrDeg = 1.5f;
 static const uint8_t kReleaseRecoverStableCycles = 8;
 static const float kReleaseWindowTargetDeltaDeg = -0.3f;
 static const float kReleaseWindowExitTargetDeltaDeg = 0.3f;
+static const int16_t kReleaseTorqueNegThreshold = -200;
+static const uint8_t kReleaseTorqueNegFaultCycles = 5;
 static const int16_t kOverloadThreshold = 500;
 static const uint8_t kOverloadDebounceCycles = 5;
 
@@ -125,6 +126,7 @@ struct ReleaseGuardState {
     uint8_t faultActive;
     uint8_t catastrophicFault;
     uint8_t releaseWindowActive;
+    uint8_t negTorqueCycles;
     int32_t releaseServoAccumCounts;
     float actualReturnAccumDeg;
     float prevTargetDeg;
@@ -142,6 +144,7 @@ static void resetReleaseGuardState(ReleaseGuardState* state)
     state->faultActive = 0;
     state->catastrophicFault = 0;
     state->releaseWindowActive = 0;
+    state->negTorqueCycles = 0;
     state->releaseServoAccumCounts = 0;
     state->actualReturnAccumDeg = 0.0f;
     state->prevTargetDeg = 0.0f;
@@ -159,6 +162,7 @@ static void clearReleaseGuardAccumulators(ReleaseGuardState* state)
     state->releaseServoAccumCounts = 0;
     state->actualReturnAccumDeg = 0.0f;
     state->recoverStableCycles = 0;
+    state->negTorqueCycles = 0;
 }
 
 static bool shouldApplyReleaseGuard(uint8_t jointIndex)
@@ -648,6 +652,7 @@ void taskSolver(void* parameter)
                 const int ch = findMotorChannel(bus, id);
                 const bool servoOnline = (ch >= 0) && (servoData.onlineStatus[ch] != 0);
                 const int32_t servoPos = (ch >= 0) ? servoData.servoAngles[ch] : 0;
+                const int16_t servoLoad = (ch >= 0) ? telemetryData.load[ch] : 0;
                 const float targetDeg = localTargets[jointIndex];
                 const float actualDeg = magAngles[jointIndex];
                 const bool guardEnabled = shouldApplyReleaseGuard(jointIndex);
@@ -705,10 +710,21 @@ void taskSolver(void* parameter)
                                        guard.actualReturnAccumDeg <= kReleaseMinReturnAccumDeg) {
                                 guard.faultActive = 1;
                                 guard.recoverStableCycles = 0;
-                            } else if (guard.releaseServoAccumCounts >= kReleaseAccumPrecheckCounts &&
-                                       actualDelta >= kReleaseReverseDeltaDeg) {
-                                guard.faultActive = 1;
-                                guard.recoverStableCycles = 0;
+                            } else if (guard.releaseServoAccumCounts >= kReleaseAccumPrecheckCounts) {
+                                if (servoLoad <= kReleaseTorqueNegThreshold) {
+                                    if (guard.negTorqueCycles < 255) {
+                                        guard.negTorqueCycles++;
+                                    }
+                                } else {
+                                    guard.negTorqueCycles = 0;
+                                }
+
+                                if (guard.negTorqueCycles >= kReleaseTorqueNegFaultCycles) {
+                                    guard.faultActive = 1;
+                                    guard.recoverStableCycles = 0;
+                                }
+                            } else {
+                                guard.negTorqueCycles = 0;
                             }
                         } else {
                             clearReleaseGuardAccumulators(&guard);

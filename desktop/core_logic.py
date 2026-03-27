@@ -22,6 +22,7 @@ class HandController:
         self._pid_enabled = False
         self._paused = False
         self._control_mode = ControlMode.JOINT_ANGLE
+        self._started = False
 
     def set_control_mode(self, mode: ControlMode):
         self._control_mode = mode
@@ -56,6 +57,7 @@ class HandController:
             return False
 
         self.running = True
+        self._started = False
         threading.Thread(target=self._update_loop, daemon=True).start()
 
         zero_raw = load_calib_zero_raw()
@@ -70,6 +72,7 @@ class HandController:
 
     def shutdown(self):
         self.running = False
+        self._started = False
         if self.comm:
             self.comm.disconnect()
 
@@ -142,15 +145,24 @@ class HandController:
     def start(self):
         if self._paused:
             return
-        self.comm and self.comm.send_command("start")
+        if self.comm:
+            self.comm.send_command("start")
+            self._started = True
 
     def stop(self):
-        self.comm and self.comm.send_command("stop")
+        if self.comm:
+            self.comm.send_command("stop")
+        self._started = False
 
     def reset(self):
         if self._paused:
             return
-        self.comm and self.comm.send_command("reset")
+        if self.comm:
+            self.comm.send_command("reset")
+        self._started = False
+
+    def is_started(self) -> bool:
+        return self._started
 
     def register_update_callback(self, callback):
         self.update_callbacks.append(callback)

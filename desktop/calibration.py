@@ -19,9 +19,6 @@ def run_calibration(
     zero_raw: List[int] = []
     _get_load = get_load or (lambda _: 0.0)
 
-    controller.start()
-    time.sleep(0.2)
-
     try:
         for joint_id in range(total):
             if progress_cb:

@@ -1,7 +1,6 @@
 # modes.py - Mode entrypoints (GUI-only flow)
 
 import threading
-import time
 from enum import Enum
 from typing import Optional
 
@@ -15,7 +14,7 @@ class Mode(Enum):
 
 
 def _run_monitor_gui(controller: HandController, port: Optional[str] = None) -> None:
-    controller.start()
+    controller.reset()
     from ui_main import HandGUI
     gui_win = HandGUI(
         controller,
@@ -28,8 +27,7 @@ def _run_monitor_gui(controller: HandController, port: Optional[str] = None) -> 
 
 
 def _run_teleop_gui(controller: HandController, port: Optional[str] = None) -> None:
-    # Keep behavior consistent with monitor/algorithm: send start command in control flow.
-    controller.start()
+    controller.reset()
     try:
         from example_teleop import run as teleop_run
     except ImportError:
@@ -42,6 +40,7 @@ def _run_teleop_gui(controller: HandController, port: Optional[str] = None) -> N
 
 
 def _run_algorithm_gui(controller: HandController, port: Optional[str] = None) -> None:
+    controller.reset()
     try:
         from example_algorithm import run as algorithm_run
     except ImportError:
@@ -58,8 +57,6 @@ def _run_algorithm_gui(controller: HandController, port: Optional[str] = None) -
 
     alg_thread = threading.Thread(target=run_alg, daemon=False)
     alg_thread.start()
-    time.sleep(0.2)
-    controller.start()
     from ui_main import HandGUI
     gui_win = HandGUI(
         controller,
