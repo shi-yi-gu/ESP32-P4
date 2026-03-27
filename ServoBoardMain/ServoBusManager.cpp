@@ -5,6 +5,7 @@
 ServoBusManager::ServoBusManager() {
     _serial = nullptr;
     _writeCount = 0;
+    _syncReadTimeoutMs = SERVO_SYNC_READ_TIMEOUT_MS_DEFAULT;
 
     // 初始化反馈缓存
     for (int i = 0; i <= MAX_SERVO_ID; i++) {
@@ -78,10 +79,11 @@ int ServoBusManager::syncReadPositions(const uint8_t* ids, uint8_t count) {
     const uint8_t LEN_FEEDBACK = 8;            // pos(2) + speed(2) + load(2) + voltage(1) + temperature(1)
 
     int successCount = 0;
+    const uint16_t syncReadTimeoutMs = (_syncReadTimeoutMs == 0) ? 1 : _syncReadTimeoutMs;
 
     // 使用飞特库的同步读功能
     // 1. 初始化同步读
-    _sms.syncReadBegin(count, LEN_FEEDBACK, 100);  // 100ms 超时
+    _sms.syncReadBegin(count, LEN_FEEDBACK, syncReadTimeoutMs);
 
     // 2. 发送同步读请求
     int ret = _sms.syncReadPacketTx((uint8_t*)ids, count, ADDR_PRESENT_POSITION, LEN_FEEDBACK);
@@ -234,4 +236,12 @@ int16_t ServoBusManager::readLoad(uint8_t id) {
     _feedback[id].online = true;
     _feedback[id].lastUpdate = millis();
     return (int16_t)load;
+}
+
+void ServoBusManager::setSyncReadTimeoutMs(uint16_t timeoutMs) {
+    _syncReadTimeoutMs = (timeoutMs == 0) ? 1 : timeoutMs;
+}
+
+uint16_t ServoBusManager::getSyncReadTimeoutMs() const {
+    return _syncReadTimeoutMs;
 }

@@ -275,6 +275,10 @@ void taskSolver(void* parameter)
     uint32_t lastDiagLogMs = 0;
 #endif
 
+    TickType_t lastWakeTime = xTaskGetTickCount();
+    const TickType_t solverPeriodTicks = pdMS_TO_TICKS(10);
+    uint8_t readBusPhase = 0;
+
     while (1)
     {
         bool busWritePending[NUM_BUSES] = {false};
@@ -290,9 +294,11 @@ void taskSolver(void* parameter)
         }
 
         // 阶段2：按总线执行批量同步读取，刷新反馈缓存。
-        for (uint8_t bus = 0; bus < NUM_BUSES; bus++)
+        const uint8_t readStartBus = (readBusPhase == 0) ? 0 : 2;
+        for (uint8_t offset = 0; offset < 2; offset++)
         {
-            if (readCounts[bus] == 0) {
+            const uint8_t bus = (uint8_t)(readStartBus + offset);
+            if (bus >= NUM_BUSES || readCounts[bus] == 0) {
                 continue;
             }
             ServoBusManager* pBus = getBusByIndex(bus);
@@ -300,6 +306,7 @@ void taskSolver(void* parameter)
                 pBus->syncReadPositions(readIds[bus], readCounts[bus]);
             }
         }
+        readBusPhase ^= 1;
 
         ServoAngleData_t servoData;
         ServoTelemetryData_t telemetryData;
@@ -597,6 +604,6 @@ void taskSolver(void* parameter)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelayUntil(&lastWakeTime, solverPeriodTicks);
     }
 }

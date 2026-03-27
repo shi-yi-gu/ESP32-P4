@@ -9,6 +9,7 @@
 #define NUM_BUSES              4      // 4 路串口总线
 #define MAX_SERVOS_PER_BUS     8      // 单条总线最大舵机数
 #define MAX_SERVO_ID           32     // 支持的最大舵机ID
+#define SERVO_SYNC_READ_TIMEOUT_MS_DEFAULT 3
 
 /* ==================== 舵机反馈数据（支持多圈） ==================== */
 
@@ -66,6 +67,8 @@ public:
      * @return 成功读取的舵机数量
      */
     int syncReadPositions(const uint8_t* ids, uint8_t count);
+    void setSyncReadTimeoutMs(uint16_t timeoutMs);
+    uint16_t getSyncReadTimeoutMs() const;
 
     /**
      * @brief 获取舵机原始位置（单圈）
@@ -117,6 +120,7 @@ private:
 
     /* 反馈数据缓存 */
     ServoFeedback _feedback[MAX_SERVO_ID + 1];
+    uint16_t _syncReadTimeoutMs;
 
     /* 内部辅助函数 */
     void _updateMultiTurnPosition(uint8_t id, int16_t newRawPos);
