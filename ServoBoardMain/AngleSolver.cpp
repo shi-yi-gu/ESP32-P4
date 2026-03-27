@@ -117,12 +117,14 @@ static const float kReleaseRecoverPullCmdDeg = 2.5f;
 static const float kReleaseRecoverTrackErrDeg = 1.5f;
 static const uint8_t kReleaseRecoverStableCycles = 8;
 static const float kReleaseWindowTargetDeltaDeg = -0.3f;
-static const int16_t kOverloadThreshold = 300;
+static const float kReleaseWindowExitTargetDeltaDeg = 0.3f;
+static const int16_t kOverloadThreshold = 500;
 static const uint8_t kOverloadDebounceCycles = 5;
 
 struct ReleaseGuardState {
     uint8_t faultActive;
     uint8_t catastrophicFault;
+    uint8_t releaseWindowActive;
     int32_t releaseServoAccumCounts;
     float actualReturnAccumDeg;
     float prevTargetDeg;
@@ -139,6 +141,7 @@ static void resetReleaseGuardState(ReleaseGuardState* state)
     }
     state->faultActive = 0;
     state->catastrophicFault = 0;
+    state->releaseWindowActive = 0;
     state->releaseServoAccumCounts = 0;
     state->actualReturnAccumDeg = 0.0f;
     state->prevTargetDeg = 0.0f;
@@ -673,12 +676,19 @@ void taskSolver(void* parameter)
                         servoOnline;
 
                     if (!guardInputsReady) {
+                        guard.releaseWindowActive = 0;
                         clearReleaseGuardAccumulators(&guard);
                         if (!guard.catastrophicFault) {
                             guard.faultActive = 0;
                         }
                     } else if (!guard.faultActive) {
                         if (targetDelta <= kReleaseWindowTargetDeltaDeg) {
+                            guard.releaseWindowActive = 1;
+                        } else if (targetDelta >= kReleaseWindowExitTargetDeltaDeg) {
+                            guard.releaseWindowActive = 0;
+                        }
+
+                        if (guard.releaseWindowActive) {
                             guard.releaseServoAccumCounts += servoDelta;
                             if (actualDelta < 0.0f) {
                                 guard.actualReturnAccumDeg += -actualDelta;
@@ -704,6 +714,7 @@ void taskSolver(void* parameter)
                             clearReleaseGuardAccumulators(&guard);
                         }
                     } else {
+                        guard.releaseWindowActive = 0;
                         clearReleaseGuardAccumulators(&guard);
                         if (!guard.catastrophicFault) {
                             bool clearFault = false;
@@ -722,6 +733,7 @@ void taskSolver(void* parameter)
 
                             if (clearFault) {
                                 guard.faultActive = 0;
+                                guard.releaseWindowActive = 0;
                                 clearReleaseGuardAccumulators(&guard);
                             }
                         }
