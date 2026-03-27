@@ -105,6 +105,65 @@ static const uint32_t kCanBusOfflineTimeoutMs = 300;
 static const uint16_t kEncoderDisconnectRaw = 0xFFFF;
 
 // 协议映射值限幅，避开断连保留值范围。
+
+// Release-fault guard for spring-return joints (all except joint16).
+static const int32_t kReleaseAccumPrecheckCounts = 256;
+static const int32_t kReleaseAccumEarlyFaultCounts = 512;
+static const int32_t kReleaseAccumHalfTurnCounts = 2048;
+static const int32_t kReleaseAccumFullTurnCounts = 4096;
+static const float kReleaseReverseDeltaDeg = 2.0f;
+static const float kReleaseMinReturnAccumDeg = 1.5f;
+static const float kReleaseRecoverPullCmdDeg = 2.5f;
+static const float kReleaseRecoverTrackErrDeg = 1.5f;
+static const uint8_t kReleaseRecoverStableCycles = 8;
+static const float kReleaseWindowTargetDeltaDeg = -0.3f;
+
+struct ReleaseGuardState {
+    uint8_t faultActive;
+    uint8_t catastrophicFault;
+    int32_t releaseServoAccumCounts;
+    float actualReturnAccumDeg;
+    float prevTargetDeg;
+    float prevActualDeg;
+    int32_t prevServoPos;
+    uint8_t recoverStableCycles;
+    uint8_t prevInitialized;
+};
+
+static void resetReleaseGuardState(ReleaseGuardState* state)
+{
+    if (!state) {
+        return;
+    }
+    state->faultActive = 0;
+    state->catastrophicFault = 0;
+    state->releaseServoAccumCounts = 0;
+    state->actualReturnAccumDeg = 0.0f;
+    state->prevTargetDeg = 0.0f;
+    state->prevActualDeg = 0.0f;
+    state->prevServoPos = 0;
+    state->recoverStableCycles = 0;
+    state->prevInitialized = 0;
+}
+
+static void clearReleaseGuardAccumulators(ReleaseGuardState* state)
+{
+    if (!state) {
+        return;
+    }
+    state->releaseServoAccumCounts = 0;
+    state->actualReturnAccumDeg = 0.0f;
+    state->recoverStableCycles = 0;
+}
+
+static bool shouldApplyReleaseGuard(uint8_t jointIndex)
+{
+    if (jointIndex >= ENCODER_TOTAL_NUM) {
+        return false;
+    }
+    return jointIndex != kJoint16Index;
+}
+
 static int16_t clampMappedCountForProtocol(int32_t value)
 {
     if (value > 32766) return 32766;
@@ -266,10 +325,16 @@ void taskSolver(void* parameter)
     float magAngles[ENCODER_TOTAL_NUM] = {0.0f};
     int32_t absolutePosition[ENCODER_TOTAL_NUM] = {0};
     int16_t outPulses[ENCODER_TOTAL_NUM] = {0};
+    ReleaseGuardState releaseGuards[ENCODER_TOTAL_NUM];
 
     RemoteSensorData_t sensorData;
     MappedAngleData_t mappedData;
     uint8_t joint16DiffFaultCounter = 0;
+    bool prevControlEnabled = false;
+
+    for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++) {
+        resetReleaseGuardState(&releaseGuards[i]);
+    }
 
 #if SOLVER_DIAG_LOG_ENABLE
     uint32_t lastDiagLogMs = 0;
@@ -457,6 +522,11 @@ void taskSolver(void* parameter)
         }
         const bool hostControlEnabled = (sharedData->control_enabled != 0);
         const bool controlEnabled = hostControlEnabled;
+        if (hostControlEnabled && !prevControlEnabled) {
+            for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++) {
+                resetReleaseGuardState(&releaseGuards[i]);
+            }
+        }
 
         // 仅关节控制模式下执行角度限幅（直控模式透传原始目标）。
         if (sharedData->control_mode == CONTROL_MODE_JOINT) {
@@ -512,12 +582,104 @@ void taskSolver(void* parameter)
                 const uint8_t bus = jointMap[jointIndex].busIndex;
                 const uint8_t id = jointMap[jointIndex].servoID;
                 ServoBusManager* pBus = getBusByIndex(bus);
+                const int ch = findMotorChannel(bus, id);
+                const bool servoOnline = (ch >= 0) && (servoData.onlineStatus[ch] != 0);
+                const int32_t servoPos = (ch >= 0) ? servoData.servoAngles[ch] : 0;
+                const float targetDeg = localTargets[jointIndex];
+                const float actualDeg = magAngles[jointIndex];
+                const bool guardEnabled = shouldApplyReleaseGuard(jointIndex);
+
+                bool releaseFaultActive = false;
+                if (guardEnabled) {
+                    ReleaseGuardState& guard = releaseGuards[jointIndex];
+                    if (!guard.prevInitialized) {
+                        guard.prevTargetDeg = targetDeg;
+                        guard.prevActualDeg = actualDeg;
+                        guard.prevServoPos = servoPos;
+                        guard.prevInitialized = 1;
+                    }
+
+                    const float targetDelta = targetDeg - guard.prevTargetDeg;
+                    const float actualDelta = actualDeg - guard.prevActualDeg;
+                    const int32_t servoDelta = (servoPos >= guard.prevServoPos)
+                        ? (servoPos - guard.prevServoPos)
+                        : (guard.prevServoPos - servoPos);
+                    const bool guardInputsReady =
+                        (sharedData->control_mode == CONTROL_MODE_JOINT) &&
+                        controlEnabled &&
+                        canBusOnline &&
+                        sensorData.isValid &&
+                        (mappedData.validFlags[jointIndex] != 0) &&
+                        servoOnline;
+
+                    if (!guardInputsReady) {
+                        clearReleaseGuardAccumulators(&guard);
+                        if (!guard.catastrophicFault) {
+                            guard.faultActive = 0;
+                        }
+                    } else if (!guard.faultActive) {
+                        if (targetDelta <= kReleaseWindowTargetDeltaDeg) {
+                            guard.releaseServoAccumCounts += servoDelta;
+                            if (actualDelta < 0.0f) {
+                                guard.actualReturnAccumDeg += -actualDelta;
+                            }
+
+                            if (guard.releaseServoAccumCounts >= kReleaseAccumFullTurnCounts) {
+                                guard.faultActive = 1;
+                                guard.catastrophicFault = 1;
+                                guard.recoverStableCycles = 0;
+                            } else if (guard.releaseServoAccumCounts >= kReleaseAccumHalfTurnCounts) {
+                                guard.faultActive = 1;
+                                guard.recoverStableCycles = 0;
+                            } else if (guard.releaseServoAccumCounts >= kReleaseAccumEarlyFaultCounts &&
+                                       guard.actualReturnAccumDeg <= kReleaseMinReturnAccumDeg) {
+                                guard.faultActive = 1;
+                                guard.recoverStableCycles = 0;
+                            } else if (guard.releaseServoAccumCounts >= kReleaseAccumPrecheckCounts &&
+                                       actualDelta >= kReleaseReverseDeltaDeg) {
+                                guard.faultActive = 1;
+                                guard.recoverStableCycles = 0;
+                            }
+                        } else {
+                            clearReleaseGuardAccumulators(&guard);
+                        }
+                    } else {
+                        clearReleaseGuardAccumulators(&guard);
+                        if (!guard.catastrophicFault) {
+                            bool clearFault = false;
+                            if (targetDelta >= kReleaseRecoverPullCmdDeg) {
+                                clearFault = true;
+                            } else if (fabsf(targetDeg - actualDeg) <= kReleaseRecoverTrackErrDeg) {
+                                if (guard.recoverStableCycles < 255) {
+                                    guard.recoverStableCycles++;
+                                }
+                                if (guard.recoverStableCycles >= kReleaseRecoverStableCycles) {
+                                    clearFault = true;
+                                }
+                            } else {
+                                guard.recoverStableCycles = 0;
+                            }
+
+                            if (clearFault) {
+                                guard.faultActive = 0;
+                                clearReleaseGuardAccumulators(&guard);
+                            }
+                        }
+                    }
+
+                    releaseFaultActive = (guard.faultActive != 0);
+                    guard.prevTargetDeg = targetDeg;
+                    guard.prevActualDeg = actualDeg;
+                    guard.prevServoPos = servoPos;
+                }
 
                 bool emergency =
                     (!controlEnabled) ||
                     shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex);
                 if (jointIndex == kJoint16Index) {
                     emergency = emergency || joint16DualFault;
+                } else {
+                    emergency = emergency || releaseFaultActive;
                 }
 
                 if (!pBus) {
@@ -604,6 +766,7 @@ void taskSolver(void* parameter)
             }
         }
 
+        prevControlEnabled = hostControlEnabled;
         vTaskDelayUntil(&lastWakeTime, solverPeriodTicks);
     }
 }
