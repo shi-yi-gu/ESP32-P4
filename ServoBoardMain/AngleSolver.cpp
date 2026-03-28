@@ -106,73 +106,6 @@ static const uint16_t kEncoderDisconnectRaw = 0xFFFF;
 
 // 协议映射值限幅，避开断连保留值范围。
 
-// Release-fault guard for spring-return joints (all except joint16).
-static const int32_t kReleaseAccumPrecheckCounts = 256;
-static const int32_t kReleaseAccumEarlyFaultCounts = 512;
-static const int32_t kReleaseAccumHalfTurnCounts = 2048;
-static const int32_t kReleaseAccumFullTurnCounts = 4096;
-static const float kReleaseMinReturnAccumDeg = 1.5f;
-static const float kReleaseRecoverPullCmdDeg = 2.5f;
-static const float kReleaseRecoverTrackErrDeg = 1.5f;
-static const uint8_t kReleaseRecoverStableCycles = 8;
-static const float kReleaseWindowTargetDeltaDeg = -0.3f;
-static const float kReleaseWindowExitTargetDeltaDeg = 0.3f;
-static const int16_t kReleaseTorqueNegThreshold = -200;
-static const uint8_t kReleaseTorqueNegFaultCycles = 5;
-static const int16_t kOverloadThreshold = 500;
-static const uint8_t kOverloadDebounceCycles = 5;
-
-struct ReleaseGuardState {
-    uint8_t faultActive;
-    uint8_t catastrophicFault;
-    uint8_t releaseWindowActive;
-    uint8_t negTorqueCycles;
-    int32_t releaseServoAccumCounts;
-    float actualReturnAccumDeg;
-    float prevTargetDeg;
-    float prevActualDeg;
-    int32_t prevServoPos;
-    uint8_t recoverStableCycles;
-    uint8_t prevInitialized;
-};
-
-static void resetReleaseGuardState(ReleaseGuardState* state)
-{
-    if (!state) {
-        return;
-    }
-    state->faultActive = 0;
-    state->catastrophicFault = 0;
-    state->releaseWindowActive = 0;
-    state->negTorqueCycles = 0;
-    state->releaseServoAccumCounts = 0;
-    state->actualReturnAccumDeg = 0.0f;
-    state->prevTargetDeg = 0.0f;
-    state->prevActualDeg = 0.0f;
-    state->prevServoPos = 0;
-    state->recoverStableCycles = 0;
-    state->prevInitialized = 0;
-}
-
-static void clearReleaseGuardAccumulators(ReleaseGuardState* state)
-{
-    if (!state) {
-        return;
-    }
-    state->releaseServoAccumCounts = 0;
-    state->actualReturnAccumDeg = 0.0f;
-    state->recoverStableCycles = 0;
-    state->negTorqueCycles = 0;
-}
-
-static bool shouldApplyReleaseGuard(uint8_t jointIndex)
-{
-    if (jointIndex >= ENCODER_TOTAL_NUM) {
-        return false;
-    }
-    return jointIndex != kJoint16Index;
-}
-
 static int16_t clampMappedCountForProtocol(int32_t value)
 {
     if (value > 32766) return 32766;
@@ -334,19 +267,10 @@ void taskSolver(void* parameter)
     float magAngles[ENCODER_TOTAL_NUM] = {0.0f};
     int32_t absolutePosition[ENCODER_TOTAL_NUM] = {0};
     int16_t outPulses[ENCODER_TOTAL_NUM] = {0};
-    ReleaseGuardState releaseGuards[ENCODER_TOTAL_NUM];
-    uint8_t overloadDebounce[SERVO_TOTAL_NUM] = {0};
-    uint8_t overloadFaultLatched[SERVO_TOTAL_NUM] = {0};
 
     RemoteSensorData_t sensorData;
     MappedAngleData_t mappedData;
     uint8_t joint16DiffFaultCounter = 0;
-    bool prevControlEnabled = false;
-    uint32_t lastOverloadResetToken = sharedData->overload_fault_reset_token;
-
-    for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++) {
-        resetReleaseGuardState(&releaseGuards[i]);
-    }
     const int joint16PrimaryCh =
         findMotorChannel(jointMap[kJoint16Index].busIndex, jointMap[kJoint16Index].servoID);
     const int joint16SecondaryCh =
@@ -367,14 +291,6 @@ void taskSolver(void* parameter)
         uint8_t readCounts[NUM_BUSES] = {0};
         int16_t jointCmdPos[ENCODER_TOTAL_NUM] = {0};
         uint8_t jointCmdValid[ENCODER_TOTAL_NUM] = {0};
-        const uint32_t overloadResetToken = sharedData->overload_fault_reset_token;
-
-        if (overloadResetToken != lastOverloadResetToken) {
-            memset(overloadDebounce, 0, sizeof(overloadDebounce));
-            memset(overloadFaultLatched, 0, sizeof(overloadFaultLatched));
-            sharedData->overload_fault_bitmap = 0;
-            lastOverloadResetToken = overloadResetToken;
-        }
 
         // 阶段1：收集本周期需要读取的舵机列表。
         for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
@@ -430,53 +346,8 @@ void taskSolver(void* parameter)
             xQueueOverwrite(sharedData->servoTelemetryQueue, &telemetryData);
         }
 
-        if (sharedData->control_mode == CONTROL_MODE_JOINT)
-        {
-            for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
-            {
-                if (overloadFaultLatched[ch] != 0) {
-                    overloadDebounce[ch] = 0;
-                    continue;
-                }
-
-                const bool sampleValid = (servoData.onlineStatus[ch] != 0);
-                const bool overloadNow = sampleValid && (telemetryData.load[ch] >= kOverloadThreshold);
-                if (overloadNow) {
-                    if (overloadDebounce[ch] < 255) {
-                        overloadDebounce[ch]++;
-                    }
-                    if (overloadDebounce[ch] >= kOverloadDebounceCycles) {
-                        overloadFaultLatched[ch] = 1;
-                        overloadDebounce[ch] = 0;
-                        if ((int)ch == joint16PrimaryCh || (int)ch == joint16SecondaryCh) {
-                            if (joint16PrimaryCh >= 0) {
-                                overloadFaultLatched[joint16PrimaryCh] = 1;
-                                overloadDebounce[joint16PrimaryCh] = 0;
-                            }
-                            if (joint16SecondaryCh >= 0) {
-                                overloadFaultLatched[joint16SecondaryCh] = 1;
-                                overloadDebounce[joint16SecondaryCh] = 0;
-                            }
-                        }
-                    }
-                } else {
-                    overloadDebounce[ch] = 0;
-                }
-            }
-        }
-        else
-        {
-            memset(overloadDebounce, 0, sizeof(overloadDebounce));
-        }
-
-        uint32_t overloadFaultBitmap = 0;
-        for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM && ch < 32; ch++)
-        {
-            if (overloadFaultLatched[ch] != 0) {
-                overloadFaultBitmap |= (1UL << ch);
-            }
-        }
-        sharedData->overload_fault_bitmap = overloadFaultBitmap;
+        // Overload protection logic removed; keep protocol-compatible status field.
+        sharedData->overload_fault_bitmap = 0;
 
         // 阶段3：从舵机反馈构建“关节侧”绝对位置（闭环输入）。
         memset(absolutePosition, 0, sizeof(absolutePosition));
@@ -594,11 +465,6 @@ void taskSolver(void* parameter)
         }
         const bool hostControlEnabled = (sharedData->control_enabled != 0);
         const bool controlEnabled = hostControlEnabled;
-        if (hostControlEnabled && !prevControlEnabled) {
-            for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++) {
-                resetReleaseGuardState(&releaseGuards[i]);
-            }
-        }
 
         // 仅关节控制模式下执行角度限幅（直控模式透传原始目标）。
         if (sharedData->control_mode == CONTROL_MODE_JOINT) {
@@ -649,131 +515,12 @@ void taskSolver(void* parameter)
                 const uint8_t bus = jointMap[jointIndex].busIndex;
                 const uint8_t id = jointMap[jointIndex].servoID;
                 ServoBusManager* pBus = getBusByIndex(bus);
-                const int ch = findMotorChannel(bus, id);
-                const bool servoOnline = (ch >= 0) && (servoData.onlineStatus[ch] != 0);
-                const int32_t servoPos = (ch >= 0) ? servoData.servoAngles[ch] : 0;
-                const int16_t servoLoad = (ch >= 0) ? telemetryData.load[ch] : 0;
-                const float targetDeg = localTargets[jointIndex];
-                const float actualDeg = magAngles[jointIndex];
-                const bool guardEnabled = shouldApplyReleaseGuard(jointIndex);
-
-                bool releaseFaultActive = false;
-                if (guardEnabled) {
-                    ReleaseGuardState& guard = releaseGuards[jointIndex];
-                    if (!guard.prevInitialized) {
-                        guard.prevTargetDeg = targetDeg;
-                        guard.prevActualDeg = actualDeg;
-                        guard.prevServoPos = servoPos;
-                        guard.prevInitialized = 1;
-                    }
-
-                    const float targetDelta = targetDeg - guard.prevTargetDeg;
-                    const float actualDelta = actualDeg - guard.prevActualDeg;
-                    const int32_t servoDelta = (servoPos >= guard.prevServoPos)
-                        ? (servoPos - guard.prevServoPos)
-                        : (guard.prevServoPos - servoPos);
-                    const bool guardInputsReady =
-                        (sharedData->control_mode == CONTROL_MODE_JOINT) &&
-                        controlEnabled &&
-                        canBusOnline &&
-                        sensorData.isValid &&
-                        (mappedData.validFlags[jointIndex] != 0) &&
-                        servoOnline;
-
-                    if (!guardInputsReady) {
-                        guard.releaseWindowActive = 0;
-                        clearReleaseGuardAccumulators(&guard);
-                        if (!guard.catastrophicFault) {
-                            guard.faultActive = 0;
-                        }
-                    } else if (!guard.faultActive) {
-                        if (targetDelta <= kReleaseWindowTargetDeltaDeg) {
-                            guard.releaseWindowActive = 1;
-                        } else if (targetDelta >= kReleaseWindowExitTargetDeltaDeg) {
-                            guard.releaseWindowActive = 0;
-                        }
-
-                        if (guard.releaseWindowActive) {
-                            guard.releaseServoAccumCounts += servoDelta;
-                            if (actualDelta < 0.0f) {
-                                guard.actualReturnAccumDeg += -actualDelta;
-                            }
-
-                            if (guard.releaseServoAccumCounts >= kReleaseAccumFullTurnCounts) {
-                                guard.faultActive = 1;
-                                guard.catastrophicFault = 1;
-                                guard.recoverStableCycles = 0;
-                            } else if (guard.releaseServoAccumCounts >= kReleaseAccumHalfTurnCounts) {
-                                guard.faultActive = 1;
-                                guard.recoverStableCycles = 0;
-                            } else if (guard.releaseServoAccumCounts >= kReleaseAccumEarlyFaultCounts &&
-                                       guard.actualReturnAccumDeg <= kReleaseMinReturnAccumDeg) {
-                                guard.faultActive = 1;
-                                guard.recoverStableCycles = 0;
-                            } else if (guard.releaseServoAccumCounts >= kReleaseAccumPrecheckCounts) {
-                                if (servoLoad <= kReleaseTorqueNegThreshold) {
-                                    if (guard.negTorqueCycles < 255) {
-                                        guard.negTorqueCycles++;
-                                    }
-                                } else {
-                                    guard.negTorqueCycles = 0;
-                                }
-
-                                if (guard.negTorqueCycles >= kReleaseTorqueNegFaultCycles) {
-                                    guard.faultActive = 1;
-                                    guard.recoverStableCycles = 0;
-                                }
-                            } else {
-                                guard.negTorqueCycles = 0;
-                            }
-                        } else {
-                            clearReleaseGuardAccumulators(&guard);
-                        }
-                    } else {
-                        guard.releaseWindowActive = 0;
-                        clearReleaseGuardAccumulators(&guard);
-                        if (!guard.catastrophicFault) {
-                            bool clearFault = false;
-                            if (targetDelta >= kReleaseRecoverPullCmdDeg) {
-                                clearFault = true;
-                            } else if (fabsf(targetDeg - actualDeg) <= kReleaseRecoverTrackErrDeg) {
-                                if (guard.recoverStableCycles < 255) {
-                                    guard.recoverStableCycles++;
-                                }
-                                if (guard.recoverStableCycles >= kReleaseRecoverStableCycles) {
-                                    clearFault = true;
-                                }
-                            } else {
-                                guard.recoverStableCycles = 0;
-                            }
-
-                            if (clearFault) {
-                                guard.faultActive = 0;
-                                guard.releaseWindowActive = 0;
-                                clearReleaseGuardAccumulators(&guard);
-                            }
-                        }
-                    }
-
-                    releaseFaultActive = (guard.faultActive != 0);
-                    guard.prevTargetDeg = targetDeg;
-                    guard.prevActualDeg = actualDeg;
-                    guard.prevServoPos = servoPos;
-                }
-
-                bool overloadFaultActive = (ch >= 0) && (overloadFaultLatched[ch] != 0);
-                if (jointIndex == kJoint16Index && joint16SecondaryCh >= 0) {
-                    overloadFaultActive =
-                        overloadFaultActive || (overloadFaultLatched[joint16SecondaryCh] != 0);
-                }
 
                 bool emergency =
                     (!controlEnabled) ||
                     shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex);
                 if (jointIndex == kJoint16Index) {
-                    emergency = emergency || joint16DualFault || overloadFaultActive;
-                } else {
-                    emergency = emergency || releaseFaultActive || overloadFaultActive;
+                    emergency = emergency || joint16DualFault;
                 }
 
                 if (!pBus) {
@@ -860,7 +607,6 @@ void taskSolver(void* parameter)
             }
         }
 
-        prevControlEnabled = hostControlEnabled;
         vTaskDelayUntil(&lastWakeTime, solverPeriodTicks);
     }
 }
