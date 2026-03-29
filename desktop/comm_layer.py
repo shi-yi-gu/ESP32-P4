@@ -13,6 +13,7 @@ from protocol import (
     ENCODER_COUNT,
     MOTOR_COUNT,
     PACKET_TYPE_FAULT_STATUS,
+    PACKET_TYPE_RELEASE_FAULT,
     RX_POLL_SLEEP,
     RX_QUEUE_MAXSIZE,
     SERIAL_TIMEOUT,
@@ -29,6 +30,7 @@ from protocol import (
     CMD_SENSOR_STREAM_MODE,
     parse_calib_ack,
     parse_fault_status_packet,
+    parse_release_fault_packet,
     parse_frame,
     parse_joint_debug_packet,
     parse_proto_ack,
@@ -263,6 +265,13 @@ class LowerComputerComm:
                 if fault_bitmap is not None:
                     for i in range(MOTOR_COUNT):
                         model.servo_overload_fault[i] = ((fault_bitmap >> i) & 0x01) != 0
+                    emitted = True
+
+            elif pkt_type == PACKET_TYPE_RELEASE_FAULT:
+                release_fault_bitmap = parse_release_fault_packet(payload)
+                if release_fault_bitmap is not None:
+                    for i in range(ENCODER_COUNT):
+                        model.joint_reverse_release_fault[i] = ((release_fault_bitmap >> i) & 0x01) != 0
                     emitted = True
 
             elif pkt_type == 0x06:
