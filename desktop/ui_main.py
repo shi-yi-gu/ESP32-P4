@@ -1810,6 +1810,10 @@ class HandGUI:
             self._overload_var.set("伺服过载: —")
         if hasattr(self, "_overload_lbl"):
             self._overload_lbl.config(fg="gray35")
+        if hasattr(self, "_release_fault_var"):
+            self._release_fault_var.set("反绕保护: 无")
+        if hasattr(self, "_release_fault_lbl"):
+            self._release_fault_lbl.config(fg="gray35")
 
     def _show_servo_status_dialog(self) -> None:
         """PACKET_TYPE_FAULT_STATUS / 关节调试扩展字段等（不改变触觉与相机区）。"""
@@ -1822,6 +1826,8 @@ class HandGUI:
         else:
             fl = [str(i) for i, f in enumerate(getattr(s, "servo_overload_fault", []) or []) if f]
             lines.append(f"过载锁存 (motor 索引): {', '.join(fl) if fl else '无'}")
+            rfl = [f"J{i}" for i, f in enumerate(getattr(s, "joint_reverse_release_fault", []) or []) if f]
+            lines.append(f"反绕保护 (joint): {', '.join(rfl) if rfl else '无'}")
             cv = getattr(s, "joint_debug_cmd_valid", None) or []
             cp = getattr(s, "joint_debug_cmd_target_pos", None) or []
             n_ok = sum(1 for v in cv if v)
@@ -1965,6 +1971,9 @@ class HandGUI:
         self._overload_var = tk.StringVar(value="伺服过载: —")
         self._overload_lbl = tk.Label(bar, textvariable=self._overload_var, fg="gray35", font=("", 9))
         self._overload_lbl.pack(side=tk.RIGHT, padx=(0, 10))
+        self._release_fault_var = tk.StringVar(value="反绕保护: 无")
+        self._release_fault_lbl = tk.Label(bar, textvariable=self._release_fault_var, fg="gray35", font=("", 9))
+        self._release_fault_lbl.pack(side=tk.RIGHT, padx=(0, 10))
         ttk.Label(bar, textvariable=self._delay_var).pack(side=tk.RIGHT)
 
     def _update_display(self):
@@ -2044,6 +2053,14 @@ class HandGUI:
             base = "[Paused] " + base
         self.status_var.set(base)
         self._delay_var.set(f"Latency: {(time.time() - s.timestamp)*1000:.0f} ms")
+        if hasattr(self, "_release_fault_var") and hasattr(self, "_release_fault_lbl"):
+            rfl = [f"J{i}" for i, f in enumerate(getattr(s, "joint_reverse_release_fault", []) or []) if f]
+            if rfl:
+                self._release_fault_var.set(f"反绕保护: {','.join(rfl)}")
+                self._release_fault_lbl.config(fg="red")
+            else:
+                self._release_fault_var.set("反绕保护: 无")
+                self._release_fault_lbl.config(fg="gray35")
         if hasattr(self, "_overload_var") and hasattr(self, "_overload_lbl"):
             fl = [str(i) for i, f in enumerate(getattr(s, "servo_overload_fault", []) or []) if f]
             if fl:

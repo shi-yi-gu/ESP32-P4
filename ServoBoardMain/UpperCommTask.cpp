@@ -18,6 +18,7 @@ extern volatile uint8_t g_calibrationUIStatus;
 #define PACKET_TYPE_SERVO_TELEM 0x05
 #define PACKET_TYPE_PROTO_ACK 0x06
 #define PACKET_TYPE_FAULT_STATUS 0x07
+#define PACKET_TYPE_RELEASE_FAULT 0x08
 
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
@@ -108,6 +109,23 @@ static void sendFaultStatusPacket(uint32_t overloadFaultBitmap)
     buffer[idx++] = (uint8_t)((overloadFaultBitmap >> 16) & 0xFF);
     buffer[idx++] = (uint8_t)((overloadFaultBitmap >> 8) & 0xFF);
     buffer[idx++] = (uint8_t)(overloadFaultBitmap & 0xFF);
+    buffer[idx++] = PROTOCOL_TAIL;
+    buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
+    Serial.write(buffer, idx);
+}
+
+static void sendReleaseFaultPacket(uint32_t releaseFaultBitmap)
+{
+    uint8_t buffer[8];
+    size_t idx = 0;
+
+    buffer[idx++] = PROTOCOL_HEADER;
+    buffer[idx++] = 0x00;
+    buffer[idx++] = PACKET_TYPE_RELEASE_FAULT;
+    buffer[idx++] = (uint8_t)((releaseFaultBitmap >> 24) & 0xFF);
+    buffer[idx++] = (uint8_t)((releaseFaultBitmap >> 16) & 0xFF);
+    buffer[idx++] = (uint8_t)((releaseFaultBitmap >> 8) & 0xFF);
+    buffer[idx++] = (uint8_t)(releaseFaultBitmap & 0xFF);
     buffer[idx++] = PROTOCOL_TAIL;
     buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
     Serial.write(buffer, idx);
@@ -370,6 +388,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
         sharedData->control_enabled = 1;
         sharedData->joint16_dual_feedback_fault = 0;
         sharedData->overload_fault_reset_token++;
+        sharedData->reverse_release_fault_reset_token++;
         return;
     }
 
@@ -388,6 +407,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
         sharedData->control_mode = CONTROL_MODE_JOINT;
         sharedData->joint16_dual_feedback_fault = 0;
         sharedData->overload_fault_reset_token++;
+        sharedData->reverse_release_fault_reset_token++;
         return;
     }
 
@@ -447,6 +467,9 @@ void taskUpperComm(void* parameter)
     uint32_t lastFaultStatusSent = 0;
     uint32_t lastFaultStatusSentMs = 0;
     bool faultStatusSentInitialized = false;
+    uint32_t lastReleaseFaultSent = 0;
+    uint32_t lastReleaseFaultSentMs = 0;
+    bool releaseFaultSentInitialized = false;
 
     Serial.println("<<<SYS_READY>>>");
 
@@ -550,6 +573,18 @@ void taskUpperComm(void* parameter)
             lastFaultStatusSent = faultBitmap;
             lastFaultStatusSentMs = nowMs;
             faultStatusSentInitialized = true;
+        }
+
+        const uint32_t releaseFaultBitmap = sharedData->reverse_release_fault_bitmap;
+        const bool releaseBitmapChanged =
+            (!releaseFaultSentInitialized) || (releaseFaultBitmap != lastReleaseFaultSent);
+        const bool releaseHeartbeatDue =
+            (!releaseFaultSentInitialized) || ((nowMs - lastReleaseFaultSentMs) >= kFaultStatusHeartbeatMs);
+        if (releaseBitmapChanged || releaseHeartbeatDue) {
+            sendReleaseFaultPacket(releaseFaultBitmap);
+            lastReleaseFaultSent = releaseFaultBitmap;
+            lastReleaseFaultSentMs = nowMs;
+            releaseFaultSentInitialized = true;
         }
 
         vTaskDelay(pdMS_TO_TICKS(5));
