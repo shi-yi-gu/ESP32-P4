@@ -4,6 +4,11 @@
 #include <Arduino.h>
 #include "TaskSharedData.h"
 
+// CalibrationTask 头文件职责：
+// 1) 定义关节标定配置/结果的数据结构；
+// 2) 声明手工标定注入与自动标定接口；
+// 3) 暴露双舵机关节标定约束访问入口。
+
 // 标定任务资源配置：当前阶段任务本体为占位实现，保留参数用于后续恢复自动标定。
 #define CALIB_TASK_STACK_SIZE 6144
 #define TASK_CALIB_PRIORITY   2

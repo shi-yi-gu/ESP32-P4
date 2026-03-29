@@ -8,7 +8,12 @@
 
 extern volatile uint8_t g_calibrationUIStatus;
 
-// Upstream frame (device -> host): [0xFE][LEN][TYPE][PAYLOAD][0xFF]
+// UpperCommTask 模块职责：
+// 1) 解析上位机下行命令并更新共享控制状态；
+// 2) 组包上报传感器、舵机、调试和故障状态；
+// 3) 维护串口协议 ACK 与故障位图心跳同步。
+//
+// 上行帧（设备 -> 上位机）：[0xFE][LEN][TYPE][PAYLOAD][0xFF]
 #define PROTOCOL_HEADER 0xFE
 #define PROTOCOL_TAIL 0xFF
 #define PACKET_TYPE_SENSOR 0x01
@@ -22,7 +27,7 @@ extern volatile uint8_t g_calibrationUIStatus;
 
 #define PROTOCOL_DISCONNECT_SENTINEL ((int16_t)0x7FFF)
 
-// Downstream commands (host -> device)
+// 下行命令（上位机 -> 设备）
 #define CMD_CALIBRATE 0xCA
 #define CMD_ANGLE_CTRL 0xCB
 #define CMD_START 0xCC
@@ -49,6 +54,7 @@ static const int32_t kEncoderModulo = 16384;
 static const uint32_t kFaultStatusHeartbeatMs = 200;
 static uint8_t g_sensorStreamMode = SENSOR_STREAM_MODE_SIGNED_I16;
 
+// 将 float 以大端字节序写入缓冲区（用于上行调试包）。
 static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
 {
     uint32_t bits = 0;
@@ -59,6 +65,7 @@ static void appendFloatBigEndian(uint8_t* buffer, size_t* idx, float value)
     buffer[(*idx)++] = (uint8_t)(bits & 0xFF);
 }
 
+// 根据流模式与通道有效性，将映射角计数编码为线协议 int16。
 static int16_t encodeMappedAngleForWire(int16_t mappedCount, bool channelValid)
 {
     if (!channelValid) {
@@ -81,6 +88,7 @@ static int16_t encodeMappedAngleForWire(int16_t mappedCount, bool channelValid)
     return wireValue;
 }
 
+// 下发协议 ACK 包（用于模式切换等命令回执）。
 static void sendProtoAckPacket(uint8_t cmd, uint8_t appliedMode, uint8_t status)
 {
     uint8_t buffer[8];
@@ -93,10 +101,11 @@ static void sendProtoAckPacket(uint8_t cmd, uint8_t appliedMode, uint8_t status)
     buffer[idx++] = appliedMode;
     buffer[idx++] = status;
     buffer[idx++] = PROTOCOL_TAIL;
-    buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
+    buffer[1] = (uint8_t)(idx - 2); // LEN = 类型字节 + 负载 + 尾字节
     Serial.write(buffer, idx);
 }
 
+// 上报伺服过载故障位图（0x07）。
 static void sendFaultStatusPacket(uint32_t overloadFaultBitmap)
 {
     uint8_t buffer[8];
@@ -110,10 +119,11 @@ static void sendFaultStatusPacket(uint32_t overloadFaultBitmap)
     buffer[idx++] = (uint8_t)((overloadFaultBitmap >> 8) & 0xFF);
     buffer[idx++] = (uint8_t)(overloadFaultBitmap & 0xFF);
     buffer[idx++] = PROTOCOL_TAIL;
-    buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
+    buffer[1] = (uint8_t)(idx - 2); // LEN = 类型字节 + 负载 + 尾字节
     Serial.write(buffer, idx);
 }
 
+// 上报关节反绕故障位图（0x08）。
 static void sendReleaseFaultPacket(uint32_t releaseFaultBitmap)
 {
     uint8_t buffer[8];
@@ -127,10 +137,11 @@ static void sendReleaseFaultPacket(uint32_t releaseFaultBitmap)
     buffer[idx++] = (uint8_t)((releaseFaultBitmap >> 8) & 0xFF);
     buffer[idx++] = (uint8_t)(releaseFaultBitmap & 0xFF);
     buffer[idx++] = PROTOCOL_TAIL;
-    buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
+    buffer[1] = (uint8_t)(idx - 2); // LEN = 类型字节 + 负载 + 尾字节
     Serial.write(buffer, idx);
 }
 
+// 统一封装数据包发送入口：根据非空指针选择一种上行包类型。
 static void sendDataPacket(ServoStatus_t* pServo,
                            MappedAngleData_t* pMapped,
                            ServoAngleData_t* pServoAngle,
@@ -143,7 +154,7 @@ static void sendDataPacket(ServoStatus_t* pServo,
     size_t idx = 0;
 
     buffer[idx++] = PROTOCOL_HEADER;
-    buffer[idx++] = 0x00; // LEN placeholder, filled after payload is serialized.
+    buffer[idx++] = 0x00; // LEN 占位，序列化完成后回填。
 
     if (g_calibrationUIStatus != 0)
     {
@@ -215,7 +226,7 @@ static void sendDataPacket(ServoStatus_t* pServo,
     }
 
     buffer[idx++] = PROTOCOL_TAIL;
-    buffer[1] = (uint8_t)(idx - 2); // LEN = TYPE + PAYLOAD + TAIL
+    buffer[1] = (uint8_t)(idx - 2); // LEN = 类型字节 + 负载 + 尾字节
     Serial.write(buffer, idx);
 
     if (g_calibrationUIStatus != 0) {
@@ -223,6 +234,7 @@ static void sendDataPacket(ServoStatus_t* pServo,
     }
 }
 
+// 按小端字节序解码 float。
 static float decodeFloatLittleEndian(const uint8_t* data)
 {
     uint32_t bits = 0;
@@ -235,6 +247,7 @@ static float decodeFloatLittleEndian(const uint8_t* data)
     return out;
 }
 
+// 解析下行负载中的 float 数组（小端）。
 static bool parseFloatArrayLittleEndian(const uint8_t* payload, size_t payloadLen, float* outValues, uint8_t count)
 {
     if (!payload || !outValues) {
@@ -251,6 +264,7 @@ static bool parseFloatArrayLittleEndian(const uint8_t* payload, size_t payloadLe
     return true;
 }
 
+// 解析下行负载中的 int16 数组（大端）。
 static bool parseInt16ArrayBigEndian(const uint8_t* payload, size_t payloadLen, int32_t* outValues, uint8_t count)
 {
     if (!payload || !outValues) {
@@ -268,6 +282,7 @@ static bool parseInt16ArrayBigEndian(const uint8_t* payload, size_t payloadLen, 
     return true;
 }
 
+// 写入目标关节角缓存（线程安全）。
 static void applyTargetAngles(TaskSharedData_t* sharedData, const float* angles, uint8_t count)
 {
     if (count > ENCODER_TOTAL_NUM) count = ENCODER_TOTAL_NUM;
@@ -281,12 +296,14 @@ static void applyTargetAngles(TaskSharedData_t* sharedData, const float* angles,
     }
 }
 
+// 清空全部关节角目标缓存。
 static void clearTargetAngles(TaskSharedData_t* sharedData)
 {
     float zeroAngles[ENCODER_TOTAL_NUM] = {0.0f};
     applyTargetAngles(sharedData, zeroAngles, ENCODER_TOTAL_NUM);
 }
 
+// 写入直控模式电机目标缓存。
 static void applyMotorTargets(TaskSharedData_t* sharedData, const int32_t* targets, uint8_t count)
 {
     if (!sharedData || !targets) {
@@ -301,6 +318,7 @@ static void applyMotorTargets(TaskSharedData_t* sharedData, const int32_t* targe
     }
 }
 
+// 清空直控模式电机目标缓存。
 static void clearMotorTargets(TaskSharedData_t* sharedData)
 {
     if (!sharedData) {
@@ -312,6 +330,7 @@ static void clearMotorTargets(TaskSharedData_t* sharedData)
     }
 }
 
+// 缓存标定零位原始值（非法浮点会归零）。
 static void cacheCalibZeroRaw(TaskSharedData_t* sharedData, const float* values, uint8_t count)
 {
     if (!sharedData || !values) {
@@ -335,6 +354,7 @@ static void cacheCalibZeroRaw(TaskSharedData_t* sharedData, const float* values,
     sharedData->calib_zero_raw_valid = 1;
 }
 
+// 返回指定命令帧的固定长度（用于串口流式解析）。
 static size_t getCommandFrameLength(uint8_t cmd)
 {
     switch (cmd)
@@ -357,6 +377,7 @@ static size_t getCommandFrameLength(uint8_t cmd)
     }
 }
 
+// 兼容历史单字节命令入口。
 static void handleLegacySingleByteCommand(TaskSharedData_t* sharedData, uint8_t cmd)
 {
     if (cmd == (uint8_t)'c') {
@@ -368,6 +389,7 @@ static void handleLegacySingleByteCommand(TaskSharedData_t* sharedData, uint8_t 
     }
 }
 
+// 处理完整下行命令帧并更新共享状态。
 static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* frame, size_t frameLen)
 {
     if (!sharedData || !frame || frameLen == 0) {
@@ -384,7 +406,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_START)
     {
-        // START only restores control enable and fault counter.
+        // START 仅恢复控制使能并触发故障锁存清除令牌。
         sharedData->control_enabled = 1;
         sharedData->joint16_dual_feedback_fault = 0;
         sharedData->overload_fault_reset_token++;
@@ -400,7 +422,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
 
     if (cmd == CMD_RESET)
     {
-        // RESET returns to joint control and clears command caches.
+        // RESET 恢复到关节控制模式，并清空目标缓存。
         clearTargetAngles(sharedData);
         clearMotorTargets(sharedData);
         sharedData->control_enabled = 0;
@@ -458,6 +480,7 @@ static void handleParsedCommand(TaskSharedData_t* sharedData, const uint8_t* fra
     }
 }
 
+// UpperComm 主循环：串口收包解析 + 多路队列上报 + 故障位图心跳发送。
 void taskUpperComm(void* parameter)
 {
     TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;

@@ -7,6 +7,11 @@
 #include "TaskSharedData.h"
 #include "CalibrationTask.h"
 
+// AngleSolver 模块职责：
+// 1) 汇总舵机反馈与编码器反馈，完成关节闭环输入构建；
+// 2) 执行目标限幅、双环 PID 解算与两种控制模式下发；
+// 3) 处理单关节急停、joint16 双反馈故障与反绕保护状态机。
+
 #ifndef SOLVER_DIAG_LOG_ENABLE
 #define SOLVER_DIAG_LOG_ENABLE 0
 #endif
@@ -105,7 +110,7 @@ static const uint8_t kJoint16DiffFaultCycles = 3;
 static const uint32_t kCanBusOfflineTimeoutMs = 300;
 static const uint16_t kEncoderDisconnectRaw = 0xFFFF;
 
-// Reverse-release guard (rope anti-wrapping) thresholds, balanced profile.
+// 放绳反绕保护阈值（平衡档）。
 static const float kReleaseWindowEnterTargetDeltaDeg = -0.3f;
 static const float kReleaseWindowExitTargetDeltaDeg = 0.3f;
 static const float kReleaseFilterAlpha = 0.25f;
@@ -569,7 +574,7 @@ void taskSolver(void* parameter)
             xQueueOverwrite(sharedData->servoTelemetryQueue, &telemetryData);
         }
 
-        // Overload protection logic removed; keep protocol-compatible status field.
+        // 过载保护逻辑当前关闭，但保留协议状态字段的输出兼容性。
         sharedData->overload_fault_bitmap = 0;
 
         // 阶段3：从舵机反馈构建“关节侧”绝对位置（闭环输入）。
@@ -701,7 +706,7 @@ void taskSolver(void* parameter)
 
         if (sharedData->control_mode == CONTROL_MODE_DIRECT_MOTOR)
         {
-            // Direct mode: send motorTargetRaw, but joint16 dual-fault only affects joint16 pair.
+            // 直控模式：按 motorTargetRaw 下发；joint16 双反馈故障仅作用于主副舵机对。
             if (controlEnabled) {
                 for (uint8_t ch = 0; ch < SERVO_TOTAL_NUM; ch++)
                 {
@@ -732,7 +737,7 @@ void taskSolver(void* parameter)
         }
         else
         {
-            // Joint mode: evaluate emergency per joint and send commands.
+            // 关节模式：按关节逐一评估急停条件并下发目标。
             for (uint8_t jointIndex = 0; jointIndex < ENCODER_TOTAL_NUM; jointIndex++)
             {
                 const uint8_t bus = jointMap[jointIndex].busIndex;
@@ -770,7 +775,7 @@ void taskSolver(void* parameter)
 
                 if (emergency)
                 {
-                    // 鎬ュ仠绛栫暐锛氫繚鎸佸綋鍓嶄綅缃紝閬垮厤寮傚父鐘舵€佷笅缁х画杩愬姩銆?
+                    // 急停策略：保持当前舵机位置，避免异常状态下继续运动。
                     if (pBus->isOnline(id)) {
                         const int16_t holdPos = clampServoPos(absolutePosition[jointIndex]);
                         pBus->setTarget(id, holdPos, 1000, 50);
@@ -800,7 +805,7 @@ void taskSolver(void* parameter)
                 if (jointIndex == kJoint16Index) {
                     ServoBusManager* pSecBus = getBusByIndex(joint16SecondaryMotor.busIndex);
                     if (pSecBus) {
-                        // joint16 鎷姉涓嬪彂锛氫富鏀剁怀鏃跺壇鏀剧怀锛堝弽鍚?+ 鍋忕疆锛夈€?
+                        // joint16 拮抗下发：主舵机目标确定后，副舵机按反向映射与偏置补偿计算。
                         const int32_t secTarget = -((int32_t)targetPos) + kJoint16SecondaryOffset + kJoint16TensionBias;
                         pSecBus->setTarget(joint16SecondaryMotor.servoID, clampServoPos(secTarget), 1000, 50);
                         busWritePending[joint16SecondaryMotor.busIndex] = true;

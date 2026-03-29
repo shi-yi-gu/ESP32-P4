@@ -15,6 +15,11 @@ extern "C" {
 #include "ServoBusManager.h"
 #include "TaskSharedData.h"
 
+// AngleSolver 头文件职责：
+// 1) 定义关节与电机映射数据结构；
+// 2) 声明双环 PID 解算器接口；
+// 3) 暴露求解任务入口与全局映射对象。
+
 // 关节数量与编码器通道数量保持一致（当前为 21）。
 #define JOINT_COUNT ENCODER_TOTAL_NUM
 // 舵机内部步进与角度换算系数（保留给历史逻辑/扩展使用）。

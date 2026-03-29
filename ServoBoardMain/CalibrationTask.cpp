@@ -99,6 +99,9 @@ static int16_t clampToServoPos(int32_t value) {
     return (int16_t)value;
 }
 
+// 获取关节双舵机约束：
+// - 当前仅 joint16 返回有效约束；
+// - 其余关节返回 false，调用方按单舵机流程处理。
 bool getJointDualServoConstraint(uint8_t jointIndex, JointDualServoConstraint* out) {
     if (!out) {
         return false;
@@ -111,6 +114,8 @@ bool getJointDualServoConstraint(uint8_t jointIndex, JointDualServoConstraint* o
     return false;
 }
 
+// 由主舵机目标推导副舵机目标（拮抗关系）：
+// secondary = -primary + secondaryOffset + tensionBias。
 bool computeSecondaryServoTargetForJoint(uint8_t jointIndex,
                                          int32_t primaryTarget,
                                          int16_t* outSecondaryTarget) {

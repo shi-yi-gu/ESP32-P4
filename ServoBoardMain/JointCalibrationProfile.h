@@ -4,6 +4,11 @@
 #include <Arduino.h>
 #include "CalibrationTask.h"
 
+// JointCalibrationProfile 头文件职责：
+// 1) 暴露只读标定参数总表；
+// 2) 提供按数量拷贝 profile 的辅助接口；
+// 3) 保证标定参数索引与 jointIndex 一致。
+
 // 关节标定参数总表（只读）：
 // - 下标与 jointIndex 一一对应；
 // - 每项的字段语义见 JointCalibrationConfig；

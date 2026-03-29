@@ -177,6 +177,7 @@ const JointCalibrationConfig kJointCalibrationProfile[ENCODER_TOTAL_NUM] = {
     kDefaultJointCalib  // 20
 };
 
+// 对外导出 profile 拷贝接口，避免调用方直接依赖内部静态对象布局。
 // 将 profile 拷贝到调用方缓存。
 // 安全约束：
 // - dst 为空时直接返回；

@@ -6,25 +6,30 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 
-// Joint/magnetic-encoder channels.
+// TaskSharedData 模块职责：
+// 1) 定义跨任务共享的数据结构与队列句柄；
+// 2) 统一维护控制状态、目标缓存与故障状态位图；
+// 3) 作为 UpperComm/CanComm/Solver 等任务的数据交换中心。
+
+// 关节/磁编码器通道数。
 #define ENCODER_TOTAL_NUM 21
-// Servo channels (joint16 uses dual servos).
+// 舵机通道数（joint16 使用双舵机）。
 #define SERVO_TOTAL_NUM 22
 
-// Control mode for solver output selection.
+// 求解器输出控制模式。
 #define CONTROL_MODE_JOINT 0
 #define CONTROL_MODE_DIRECT_MOTOR 1
 
-// TWAI(CAN) pins.
+// TWAI(CAN) 引脚。
 #define TWAI_TX_PIN 47
 #define TWAI_RX_PIN 48
 
-// FreeRTOS priorities.
+// FreeRTOS 任务优先级。
 #define TASK_UPPER_COMM_PRIORITY 1
 #define TASK_CAN_COMM_PRIORITY 3
 #define TASK_SOLVER_PRIORITY 4
 
-// FreeRTOS stack sizes (bytes).
+// FreeRTOS 任务栈大小（字节）。
 #define UPPER_COMM_TASK_STACK_SIZE 8192
 #define CAN_COMM_TASK_STACK_SIZE 4096
 #define SOLVER_TASK_STACK_SIZE 8192
@@ -37,9 +42,9 @@ typedef struct {
 
 typedef struct {
     uint16_t encoderValues[ENCODER_TOTAL_NUM];
-    // 1-byte error type per channel from CAN error-detail frames (0x00 means OK).
+    // 各通道错误类型（来自 CAN 错误详情帧，0x00 表示正常）。
     uint8_t errorFlags[ENCODER_TOTAL_NUM];
-    // Derived bitmap: bit i is set when errorFlags[i] != 0 (kept for quick checks).
+    // 派生错误位图：bit i = 1 表示 errorFlags[i] 非 0，便于快速判断。
     uint32_t errorBitmap;
     uint32_t timestamp;
     bool isValid;
@@ -110,19 +115,19 @@ typedef struct {
     float targetAngles[ENCODER_TOTAL_NUM];
     SemaphoreHandle_t targetAnglesMutex;
 
-    // Direct-servo mode target cache, aligned with motor channel map (0..21).
+    // 直控舵机模式目标缓存，按电机通道索引（0..21）对齐。
     int32_t motorTargetRaw[SERVO_TOTAL_NUM];
 
     volatile uint8_t control_enabled;
     volatile uint8_t control_mode; // CONTROL_MODE_*
     volatile uint8_t joint16_dual_feedback_fault;
-    // Bit i: motor channel i overload-latched fault state.
+    // 过载锁存故障位图：bit i 对应电机通道 i。
     volatile uint32_t overload_fault_bitmap;
-    // Incremented by START/RESET commands to request overload-latch clear.
+    // START/RESET 时自增，用于通知清除过载锁存故障。
     volatile uint32_t overload_fault_reset_token;
-    // Bit i: joint i reverse-release fault state (joint16 excluded by solver logic).
+    // 反绕保护故障位图：bit i 对应关节 i（joint16 在求解器内排除）。
     volatile uint32_t reverse_release_fault_bitmap;
-    // Incremented by START/RESET commands to request reverse-release fault clear.
+    // START/RESET 时自增，用于通知清除反绕故障锁存。
     volatile uint32_t reverse_release_fault_reset_token;
 
     int32_t calib_zero_raw_cache[ENCODER_TOTAL_NUM];

@@ -1,5 +1,10 @@
 #include "ServoBusManager.h"
 
+// ServoBusManager 模块职责：
+// 1) 管理单路串口总线上的舵机读写；
+// 2) 提供目标缓存与批量同步写接口；
+// 3) 维护多圈绝对位置与在线状态反馈。
+
 /* ==================== 构造函数 ==================== */
 
 ServoBusManager::ServoBusManager() {

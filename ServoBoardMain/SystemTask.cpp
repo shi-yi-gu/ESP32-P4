@@ -51,6 +51,8 @@ MotorMapItem motorMap[SERVO_TOTAL_NUM] = {
     {3, 17}, {3, 18}, {3, 19}, {3, 20},
     {3, 21}, {3, 22}
 };
+
+// 系统启动总入口：按“资源初始化 -> 参数初始化 -> 任务创建”顺序执行。
 void System_Init() {
     // 1) 串口初始化：用于上位机通信与启动日志输出。
     Serial.begin(921600);
@@ -156,6 +158,7 @@ void System_Init() {
     Serial.println("System ready.");
 }
 
+// 系统主循环：仅保留轻量节拍，实际业务由各任务并行执行。
 void System_Loop() {
     // 主循环保持轻量占位，主要工作在各 FreeRTOS 任务中执行。
     vTaskDelay(pdMS_TO_TICKS(10));

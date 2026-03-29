@@ -7,6 +7,11 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 
+// SystemTask 头文件职责：
+// 1) 声明系统初始化与主循环入口；
+// 2) 暴露跨任务共享的标定状态标志；
+// 3) 汇总系统层依赖的任务与求解器头文件。
+
 // 应用层头文件
 #include "TaskSharedData.h"
 #include "UpperCommTask.h"

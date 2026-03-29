@@ -3,6 +3,11 @@
 
 #include <string.h>
 
+// CanCommTask 模块职责：
+// 1) 接收编码器帧并重建完整关节原始值；
+// 2) 接收错误详情分片并重组 errorFlags/errorBitmap；
+// 3) 透传上层待发送 CAN 指令。
+
 static_assert(
     CAN_ERROR_DETAIL_FRAME_COUNT == (CAN_ID_ERROR_DETAIL_LAST - CAN_ID_ERROR_DETAIL_BASE + 1),
     "Error-detail ID range must match frame count.");
@@ -22,6 +27,7 @@ typedef struct {
     uint32_t firstFrameTimeMs;
 } ErrorDetailReassemblyState;
 
+// 重置错误详情分片重组状态机。
 static inline void resetErrorDetailReassembly(ErrorDetailReassemblyState* state)
 {
     if (!state) {
@@ -34,6 +40,7 @@ static inline void resetErrorDetailReassembly(ErrorDetailReassemblyState* state)
     memset(state->codes, 0, sizeof(state->codes));
 }
 
+// 根据通道错误码数组构建 32 位错误位图。
 static uint32_t buildErrorBitmap(const uint8_t* codes)
 {
     if (!codes) {
@@ -50,6 +57,7 @@ static uint32_t buildErrorBitmap(const uint8_t* codes)
     return bitmap;
 }
 
+// 初始化 TWAI 驱动（幂等调用，仅首次生效）。
 static void setupTwai()
 {
     static bool installed = false;
@@ -73,6 +81,7 @@ static void setupTwai()
     }
 }
 
+// CAN 通信任务主循环：读总线、重组数据、写共享队列、发送待发命令。
 void taskCanComm(void* parameter)
 {
     TaskSharedData_t* sharedData = (TaskSharedData_t*)parameter;
@@ -194,7 +203,7 @@ void taskCanComm(void* parameter)
 
         if (millis() - lastRxTime > 500 && rxBuffer.isValid)
         {
-            // Keep existing behavior: do not force isValid=false on short bus silence.
+            // 保持现有行为：短时总线静默不强制置 isValid=false。
         }
 
         if (xQueueReceive(sharedData->canTxQueue, &txCmd, 0) == pdTRUE)
