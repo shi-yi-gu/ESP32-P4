@@ -1,6 +1,5 @@
 #include "AngleSolver.h"
 
-#include <math.h>
 #include <string.h>
 
 #include "pid.h"
@@ -104,38 +103,6 @@ static const uint8_t kJoint16DiffFaultCycles = 3;
 
 static const uint32_t kCanBusOfflineTimeoutMs = 300;
 static const uint16_t kEncoderDisconnectRaw = 0xFFFF;
-
-// Reverse-release guard (rope anti-wrapping) thresholds, balanced profile.
-static const float kReleaseWindowEnterTargetDeltaDeg = -0.3f;
-static const float kReleaseWindowExitTargetDeltaDeg = 0.3f;
-static const float kReleaseFilterAlpha = 0.25f;
-static const float kReleaseActualDeadbandDeg = 0.2f;
-static const int32_t kReleaseAccumPrecheckCounts = 256;
-static const int32_t kReleaseAccumEarlyFaultCounts = 512;
-static const int32_t kReleaseAccumHalfTurnCounts = 2048;
-static const int32_t kReleaseAccumFullTurnCounts = 4096;
-static const float kReleaseForwardDeltaDeg = 2.0f;
-static const float kReleaseMinReturnAccumDeg = 1.5f;
-static const uint8_t kReleaseForwardAnomalyCycles = 3;
-static const float kReleaseRecoverPullCmdDeg = 2.5f;
-static const float kReleaseRecoverTrackErrDeg = 1.5f;
-static const uint8_t kReleaseRecoverStableCycles = 8;
-
-typedef struct
-{
-    uint8_t initialized;
-    uint8_t faultActive;
-    uint8_t catastrophicFault;
-    uint8_t releaseWindowActive;
-    int32_t releaseServoAccumCounts;
-    float actualReturnAccumDeg;
-    float filteredActualDeg;
-    uint8_t forwardAnomalyCycles;
-    uint8_t recoverStableCycles;
-    float prevTargetDeg;
-    float prevActualDeg;
-    int32_t prevServoPos;
-} ReleaseGuardState;
 
 // 协议映射值限幅，避开断连保留值范围。
 
@@ -283,184 +250,6 @@ static bool addReadTarget(uint8_t busIds[NUM_BUSES][MAX_SERVOS_PER_BUS],
     return true;
 }
 
-static void clearReleaseWindowTracking(ReleaseGuardState* guard)
-{
-    if (!guard) {
-        return;
-    }
-    guard->releaseWindowActive = 0;
-    guard->releaseServoAccumCounts = 0;
-    guard->actualReturnAccumDeg = 0.0f;
-    guard->forwardAnomalyCycles = 0;
-}
-
-static void resetReleaseGuardState(ReleaseGuardState* guard)
-{
-    if (!guard) {
-        return;
-    }
-    memset(guard, 0, sizeof(*guard));
-}
-
-static void resetAllReleaseGuardStates(ReleaseGuardState guards[ENCODER_TOTAL_NUM])
-{
-    for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++)
-    {
-        resetReleaseGuardState(&guards[i]);
-    }
-}
-
-static bool updateReleaseGuardState(ReleaseGuardState* guard,
-                                    float targetDeg,
-                                    float actualDeg,
-                                    int32_t servoPos,
-                                    bool inputsValid)
-{
-    if (!guard) {
-        return false;
-    }
-
-    if (!isfinite(targetDeg)) {
-        targetDeg = 0.0f;
-    }
-    if (!isfinite(actualDeg)) {
-        actualDeg = 0.0f;
-    }
-
-    if (!guard->initialized)
-    {
-        guard->initialized = 1;
-        guard->filteredActualDeg = actualDeg;
-        guard->prevActualDeg = actualDeg;
-        guard->prevTargetDeg = targetDeg;
-        guard->prevServoPos = servoPos;
-        return guard->faultActive != 0;
-    }
-
-    const float targetDelta = targetDeg - guard->prevTargetDeg;
-    guard->filteredActualDeg =
-        kReleaseFilterAlpha * actualDeg + (1.0f - kReleaseFilterAlpha) * guard->filteredActualDeg;
-    float actualDelta = guard->filteredActualDeg - guard->prevActualDeg;
-    if (fabsf(actualDelta) < kReleaseActualDeadbandDeg) {
-        actualDelta = 0.0f;
-    }
-
-    int32_t servoDelta = servoPos - guard->prevServoPos;
-    if (servoDelta < 0) {
-        servoDelta = -servoDelta;
-    }
-
-    if (!inputsValid)
-    {
-        clearReleaseWindowTracking(guard);
-        guard->recoverStableCycles = 0;
-        guard->initialized = 0;
-        guard->prevTargetDeg = targetDeg;
-        guard->prevActualDeg = guard->filteredActualDeg;
-        guard->prevServoPos = servoPos;
-        return guard->faultActive != 0;
-    }
-
-    if (targetDelta <= kReleaseWindowEnterTargetDeltaDeg) {
-        guard->releaseWindowActive = 1;
-    }
-    if (targetDelta >= kReleaseWindowExitTargetDeltaDeg) {
-        clearReleaseWindowTracking(guard);
-    }
-
-    if (guard->releaseWindowActive)
-    {
-        if (servoDelta > 0) {
-            const int32_t remaining = 0x7FFFFFFF - guard->releaseServoAccumCounts;
-            guard->releaseServoAccumCounts += (servoDelta > remaining) ? remaining : servoDelta;
-        }
-        if (actualDelta < 0.0f) {
-            guard->actualReturnAccumDeg += -actualDelta;
-        }
-
-        if ((guard->releaseServoAccumCounts >= kReleaseAccumPrecheckCounts) &&
-            (actualDelta >= kReleaseForwardDeltaDeg))
-        {
-            if (guard->forwardAnomalyCycles < 255) {
-                guard->forwardAnomalyCycles++;
-            }
-        }
-        else
-        {
-            guard->forwardAnomalyCycles = 0;
-        }
-
-        if (guard->releaseServoAccumCounts >= kReleaseAccumFullTurnCounts) {
-            guard->faultActive = 1;
-            guard->catastrophicFault = 1;
-        } else if (guard->releaseServoAccumCounts >= kReleaseAccumHalfTurnCounts) {
-            guard->faultActive = 1;
-        } else if ((guard->releaseServoAccumCounts >= kReleaseAccumEarlyFaultCounts) &&
-                   (guard->actualReturnAccumDeg <= kReleaseMinReturnAccumDeg)) {
-            guard->faultActive = 1;
-        } else if ((guard->releaseServoAccumCounts >= kReleaseAccumPrecheckCounts) &&
-                   (guard->forwardAnomalyCycles >= kReleaseForwardAnomalyCycles)) {
-            guard->faultActive = 1;
-        }
-    }
-    else
-    {
-        guard->releaseServoAccumCounts = 0;
-        guard->actualReturnAccumDeg = 0.0f;
-        guard->forwardAnomalyCycles = 0;
-    }
-
-    if (guard->faultActive && !guard->catastrophicFault)
-    {
-        bool clearFault = false;
-        if (targetDelta >= kReleaseRecoverPullCmdDeg) {
-            clearFault = true;
-        } else {
-            const float trackErr = fabsf(targetDeg - guard->filteredActualDeg);
-            if (trackErr <= kReleaseRecoverTrackErrDeg) {
-                if (guard->recoverStableCycles < 255) {
-                    guard->recoverStableCycles++;
-                }
-            } else {
-                guard->recoverStableCycles = 0;
-            }
-            if (guard->recoverStableCycles >= kReleaseRecoverStableCycles) {
-                clearFault = true;
-            }
-        }
-
-        if (clearFault)
-        {
-            guard->faultActive = 0;
-            guard->releaseWindowActive = 0;
-            guard->releaseServoAccumCounts = 0;
-            guard->actualReturnAccumDeg = 0.0f;
-            guard->forwardAnomalyCycles = 0;
-            guard->recoverStableCycles = 0;
-        }
-    }
-
-    guard->prevTargetDeg = targetDeg;
-    guard->prevActualDeg = guard->filteredActualDeg;
-    guard->prevServoPos = servoPos;
-    return guard->faultActive != 0;
-}
-
-static uint32_t buildReleaseFaultBitmap(const ReleaseGuardState guards[ENCODER_TOTAL_NUM])
-{
-    uint32_t bitmap = 0;
-    for (uint8_t i = 0; i < ENCODER_TOTAL_NUM; i++)
-    {
-        if (i == kJoint16Index) {
-            continue;
-        }
-        if (guards[i].faultActive) {
-            bitmap |= (1UL << i);
-        }
-    }
-    return bitmap;
-}
-
 // Solver 任务主循环：
 // 1) 读取舵机反馈并上报遥测；
 // 2) 构建关节反馈量与传感器映射量；
@@ -486,10 +275,6 @@ void taskSolver(void* parameter)
         findMotorChannel(jointMap[kJoint16Index].busIndex, jointMap[kJoint16Index].servoID);
     const int joint16SecondaryCh =
         findMotorChannel(joint16SecondaryMotor.busIndex, joint16SecondaryMotor.servoID);
-    ReleaseGuardState releaseGuards[ENCODER_TOTAL_NUM];
-    resetAllReleaseGuardStates(releaseGuards);
-    uint32_t lastReleaseFaultResetToken = sharedData->reverse_release_fault_reset_token;
-    sharedData->reverse_release_fault_bitmap = 0;
 
 #if SOLVER_DIAG_LOG_ENABLE
     uint32_t lastDiagLogMs = 0;
@@ -501,14 +286,6 @@ void taskSolver(void* parameter)
 
     while (1)
     {
-        const uint32_t releaseFaultResetToken = sharedData->reverse_release_fault_reset_token;
-        if (releaseFaultResetToken != lastReleaseFaultResetToken)
-        {
-            resetAllReleaseGuardStates(releaseGuards);
-            sharedData->reverse_release_fault_bitmap = 0;
-            lastReleaseFaultResetToken = releaseFaultResetToken;
-        }
-
         bool busWritePending[NUM_BUSES] = {false};
         uint8_t readIds[NUM_BUSES][MAX_SERVOS_PER_BUS] = {0};
         uint8_t readCounts[NUM_BUSES] = {0};
@@ -738,30 +515,12 @@ void taskSolver(void* parameter)
                 const uint8_t bus = jointMap[jointIndex].busIndex;
                 const uint8_t id = jointMap[jointIndex].servoID;
                 ServoBusManager* pBus = getBusByIndex(bus);
-                bool releaseFaultActive = false;
-
-                if (jointIndex != kJoint16Index)
-                {
-                    const int jointMotorCh = findMotorChannel(bus, id);
-                    const bool servoOnline = (jointMotorCh >= 0) && (servoData.onlineStatus[jointMotorCh] != 0);
-                    const bool mappedValid = canBusOnline && (mappedData.validFlags[jointIndex] != 0);
-                    const bool inputsValid = servoOnline && mappedValid;
-                    const int32_t servoPos =
-                        (jointMotorCh >= 0) ? servoData.servoAngles[jointMotorCh] : absolutePosition[jointIndex];
-                    releaseFaultActive = updateReleaseGuardState(&releaseGuards[jointIndex],
-                                                                 localTargets[jointIndex],
-                                                                 magAngles[jointIndex],
-                                                                 servoPos,
-                                                                 inputsValid);
-                }
 
                 bool emergency =
                     (!controlEnabled) ||
                     shouldEmergencyStop(canBusOnline, sensorData, mappedData, jointIndex);
                 if (jointIndex == kJoint16Index) {
                     emergency = emergency || joint16DualFault;
-                } else {
-                    emergency = emergency || releaseFaultActive;
                 }
 
                 if (!pBus) {
@@ -808,8 +567,6 @@ void taskSolver(void* parameter)
                 }
             }
         }
-
-        sharedData->reverse_release_fault_bitmap = buildReleaseFaultBitmap(releaseGuards);
 
         if (sharedData->jointDebugQueue)
         {

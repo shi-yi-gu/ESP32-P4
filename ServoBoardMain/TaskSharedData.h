@@ -120,10 +120,6 @@ typedef struct {
     volatile uint32_t overload_fault_bitmap;
     // Incremented by START/RESET commands to request overload-latch clear.
     volatile uint32_t overload_fault_reset_token;
-    // Bit i: joint i reverse-release fault state (joint16 excluded by solver logic).
-    volatile uint32_t reverse_release_fault_bitmap;
-    // Incremented by START/RESET commands to request reverse-release fault clear.
-    volatile uint32_t reverse_release_fault_reset_token;
 
     int32_t calib_zero_raw_cache[ENCODER_TOTAL_NUM];
     volatile uint8_t calib_zero_raw_valid;

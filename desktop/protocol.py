@@ -19,7 +19,6 @@ PACKET_TYPE_JOINT_DEBUG = 0x04
 PACKET_TYPE_SERVO_TELEM = 0x05
 PACKET_TYPE_PROTO_ACK = 0x06
 PACKET_TYPE_FAULT_STATUS = 0x07
-PACKET_TYPE_RELEASE_FAULT = 0x08
 
 # Downstream commands (desktop -> device)
 CMD_CALIBRATE = 0xCA
@@ -124,12 +123,6 @@ def parse_servo_telem_packet(
 
 
 def parse_fault_status_packet(payload: bytes) -> Optional[int]:
-    if len(payload) != 4:
-        return None
-    return struct.unpack(">I", payload)[0]
-
-
-def parse_release_fault_packet(payload: bytes) -> Optional[int]:
     if len(payload) != 4:
         return None
     return struct.unpack(">I", payload)[0]
